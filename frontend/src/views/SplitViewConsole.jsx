@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useContext } from 'react';
 import api from '../services/api';
 import { AuthContext } from '../context/AuthContext';
+import RouteQrModal from '../components/ui/RouteQrModal';
 import { Line } from 'react-chartjs-2';
 import {
   Truck, Route as RouteIcon, Sparkles, Navigation, IndianRupee,
@@ -119,6 +120,17 @@ const SplitViewConsole = () => {
   const [syncMsg, setSyncMsg] = useState('');
   const [dbLoading, setDbLoading] = useState(false);
 
+  // QR Modal & Stop Verification state
+  const [showQrModal, setShowQrModal] = useState(false);
+  const [qrModalRoute, setQrModalRoute] = useState(null);
+  const [showScanModal, setShowScanModal] = useState(false);
+  const [scanToken, setScanToken] = useState('');
+  const [scanVehicleId, setScanVehicleId] = useState('');
+  const [scanSubmitting, setScanSubmitting] = useState(false);
+  const [scanResultModal, setScanResultModal] = useState(null);
+  const [transitStatusDetails, setTransitStatusDetails] = useState(null);
+  const [transitHistory, setTransitHistory] = useState([]);
+
   const fetchData = async (showProgress = false) => {
     if (showProgress) setLoading(true);
     try {
@@ -150,7 +162,7 @@ const SplitViewConsole = () => {
     fetchData(true);
   }, [user]);
 
-  // Handle selected vehicle details & predictions
+  // Handle selected vehicle details, transit status & history
   const fetchVehicleDetails = async (vehicleId) => {
     if (!vehicleId) return;
     setRightLoading(true);
@@ -164,8 +176,22 @@ const SplitViewConsole = () => {
       setDelayPred(null);
       setPricePred(null);
       setLoadRecommendations([]);
+      setTransitStatusDetails(null);
+      setTransitHistory([]);
 
-      // 1. Fetch live dynamic recommendations
+      // 1. Fetch live transit status & audit history
+      try {
+        const [statusRes, historyRes] = await Promise.all([
+          api.get(`/transit/${activeVehicle.vehicleId}/status`),
+          api.get(`/transit/${activeVehicle.vehicleId}/history`)
+        ]);
+        setTransitStatusDetails(statusRes.data);
+        setTransitHistory(historyRes.data || []);
+      } catch (e) {
+        console.warn('Failed to load vehicle transit status', e);
+      }
+
+      // 2. Fetch live dynamic recommendations
       try {
         const { data } = await api.get(`/vehicles/${activeVehicle.vehicleId}/recommendations`);
         setLoadRecommendations(data.recommendations || []);
@@ -173,7 +199,7 @@ const SplitViewConsole = () => {
         console.warn('Failed to load vehicle dynamic recommendations', e);
       }
 
-      // 2. Fetch ML predictions from FastAPI
+      // 3. Fetch ML predictions from FastAPI
       if (activeVehicle.routeLane !== 'Inactive Lane' && activeVehicle.routeLane) {
         try {
           const payload = {
@@ -239,7 +265,7 @@ const SplitViewConsole = () => {
         const bDateStr = new Date(b.date).toISOString().split('T')[0];
         return b.vehicleId === 'UNASSIGNED' && 
                bDateStr === dispatchDate &&
-               b.status === 'Pending';
+               (b.status === 'Pending' || b.status === 'PENDING');
       });
       setUnassignedShipments(unassigned);
       setSyncMsg(`Synced! Found ${unassigned.length} pending shipments waiting for consolidation on ${dispatchDate}.`);
@@ -257,14 +283,40 @@ const SplitViewConsole = () => {
     }
   }, [activeTab, dispatchDate]);
 
-  // Action: Start active transit trip (Sets tripStartedAt)
+  // Action: Dispatch active truck
   const handleStartTrip = async (vehicleId) => {
     try {
-      await api.post(`/vehicles/${vehicleId}/transit-state`, { action: 'start-trip' });
-      alert(`Trip started successfully for ${vehicleId}! The dynamic tracker will now estimate live positioning.`);
+      const { data } = await api.post(`/transit/dispatch/${vehicleId}`);
+      alert(data.message || `Truck ${vehicleId} dispatched successfully!`);
       fetchData();
+      fetchVehicleDetails(vehicleId);
     } catch (err) {
-      alert(err.response?.data?.message || 'Failed to start trip.');
+      alert(err.response?.data?.message || 'Failed to dispatch truck.');
+    }
+  };
+
+  // Action: Execute Stop Verification Scan
+  const handleExecuteScan = async (e) => {
+    if (e) e.preventDefault();
+    if (!scanVehicleId.trim() || !scanToken.trim()) {
+      alert('Vehicle ID and QR Token are required.');
+      return;
+    }
+    setScanSubmitting(true);
+    try {
+      const { data } = await api.post('/transit/verify-stop', {
+        vehicleId: scanVehicleId.trim(),
+        qrToken: scanToken.trim()
+      });
+      setShowScanModal(false);
+      setScanResultModal(data);
+      setScanToken('');
+      fetchData();
+      if (selectedVehicleId) fetchVehicleDetails(selectedVehicleId);
+    } catch (err) {
+      alert(err.response?.data?.message || 'Stop verification failed.');
+    } finally {
+      setScanSubmitting(false);
     }
   };
 
@@ -662,18 +714,31 @@ const SplitViewConsole = () => {
                     </div>
 
                     <div className="flex items-center space-x-2">
-                      {selectedVehicleObj.transitStatus === 'Idle' && selectedVehicleObj.routeLane && (
+                      {(selectedVehicleObj.transitStatus === 'READY' || selectedVehicleObj.transitStatus === 'Idle') && selectedVehicleObj.routeLane && (
                         <button
                           onClick={() => handleStartTrip(selectedVehicleObj.vehicleId)}
                           className="flex items-center space-x-1.5 px-4 py-2 bg-[#16a34a] hover:bg-[#15803d] text-white rounded-xl text-[11px] font-black shadow-md border-none cursor-pointer"
                         >
                           <Play className="w-3.5 h-3.5 fill-current" />
-                          <span>Start Trip / Dispatch</span>
+                          <span>Dispatch Truck</span>
                         </button>
                       )}
+                      
+                      {(selectedVehicleObj.transitStatus === 'IN_TRANSIT' || selectedVehicleObj.transitStatus === 'AT_STOP' || selectedVehicleObj.transitStatus === 'DISPATCHED' || selectedVehicleObj.transitStatus === 'In Transit') && (
+                        <button
+                          onClick={() => { setScanVehicleId(selectedVehicleObj.vehicleId); setShowScanModal(true); }}
+                          className="flex items-center space-x-1.5 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-[11px] font-black shadow-md border-none cursor-pointer"
+                        >
+                          <QrCode className="w-3.5 h-3.5" />
+                          <span>Verify Stop QR</span>
+                        </button>
+                      )}
+
                       <span className={`px-2.5 py-1 rounded-full text-[10px] font-black border uppercase tracking-widest ${
-                        selectedVehicleObj.transitStatus === 'Idle' ? 'bg-gray-50 text-gray-500 border-gray-200' :
-                        selectedVehicleObj.transitStatus === 'At Stop' ? 'bg-amber-50 text-amber-700 border-amber-200 animate-pulse' : 'bg-green-50 text-green-700 border-green-200'
+                        selectedVehicleObj.transitStatus === 'READY' || selectedVehicleObj.transitStatus === 'Idle' ? 'bg-gray-50 text-gray-500 border-gray-200' :
+                        selectedVehicleObj.transitStatus === 'AT_STOP' ? 'bg-amber-50 text-amber-700 border-amber-200 animate-pulse' :
+                        selectedVehicleObj.transitStatus === 'COMPLETED' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                        'bg-green-50 text-green-700 border-green-200'
                       }`}>{selectedVehicleObj.transitStatus}</span>
                     </div>
                   </div>
@@ -709,14 +774,16 @@ const SplitViewConsole = () => {
                     <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100 flex flex-col justify-center">
                       <div className="flex items-center space-x-2 text-[#16a34a] mb-1">
                         <Clock className="w-4 h-4" />
-                        <span className="text-[10px] font-black uppercase tracking-wider">Dynamic Progression</span>
+                        <span className="text-[10px] font-black uppercase tracking-wider">Estimated Arrival Time (ETA)</span>
                       </div>
-                      {selectedVehicleObj.transitStatus !== 'Idle' ? (
+                      {selectedVehicleObj.transitStatus !== 'Idle' && selectedVehicleObj.transitStatus !== 'READY' ? (
                         <div className="space-y-1">
                           <p className="text-[11px] text-gray-800 font-black">
-                            {selectedVehicleObj.transitStatus === 'At Stop' ? `At Stop: ${selectedVehicleObj.currentStop}` : 'In Transit'}
+                            {selectedVehicleObj.transitStatus === 'AT_STOP' ? `At Verified Stop: ${selectedVehicleObj.currentStop}` : `En Route to ${transitStatusDetails?.nextStop || 'Next Stop'}`}
                           </p>
-                          <p className="text-[9px] text-gray-400 font-semibold leading-normal">Position computed automatically based on distance/time elapsed since departure.</p>
+                          <p className="text-[9px] text-gray-400 font-semibold leading-normal">
+                            ETA predicted based on schedule. Physical stop arrival is strictly authority-verified via QR scans.
+                          </p>
                         </div>
                       ) : (
                         <p className="text-[11px] text-gray-400 font-bold py-1">Truck is idle at terminal depot.</p>
@@ -741,33 +808,69 @@ const SplitViewConsole = () => {
                     </div>
                   </div>
 
-                  {/* Dynamic Load recommendations (LIFO stop compatibility) */}
-                  <div className="py-5">
-                    <h3 className="text-[11px] font-black text-gray-900 uppercase tracking-widest mb-3.5">Active Transit Recommendations (LIFO Space Packing)</h3>
-                    {loadRecommendations.length === 0 ? (
-                      <p className="text-xs text-gray-400 italic">No pending packages match this truck's remaining stop checklist or available weight.</p>
+                  {/* Recommended Loading Sequence (LIFO rear-to-front order) */}
+                  <div className="py-5 border-b border-gray-50">
+                    <div className="flex justify-between items-center mb-3">
+                      <div>
+                        <h3 className="text-[11px] font-black text-gray-900 uppercase tracking-widest">Recommended Loading Sequence</h3>
+                        <span className="text-[9px] text-gray-400 font-semibold block">LIFO arrangement: Downstream destinations loaded deepest (front to rear)</span>
+                      </div>
+                      <span className="text-[9px] font-black text-[#16a34a] bg-green-50 px-2 py-0.5 rounded border border-green-100">
+                        {transitStatusDetails?.recommendedLoadingSequence?.length || 0} Cargo Units
+                      </span>
+                    </div>
+
+                    {!transitStatusDetails?.recommendedLoadingSequence || transitStatusDetails.recommendedLoadingSequence.length === 0 ? (
+                      <p className="text-xs text-gray-400 italic">No packages currently loaded on this truck.</p>
                     ) : (
-                      <div className="space-y-2.5 max-h-40 overflow-y-auto pr-2">
-                        {loadRecommendations.map(rec => (
-                          <div key={rec.bookingId} className="flex justify-between items-center bg-gray-50/50 hover:bg-gray-50 p-3 rounded-xl border border-gray-100">
-                            <div>
-                              <div className="flex items-center space-x-2">
-                                <span className="text-[11px] font-bold text-gray-800">{rec.bookingId}</span>
-                                <span className="text-[9px] text-[#16a34a] font-black uppercase bg-green-50 border border-green-100 px-1.5 rounded">{rec.volume} m³ · {rec.weight} kg</span>
+                      <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                        {transitStatusDetails.recommendedLoadingSequence.map(item => (
+                          <div key={item.bookingId} className="flex justify-between items-center bg-gray-50 p-2.5 rounded-xl border border-gray-100 text-[10px]">
+                            <div className="flex items-center space-x-2.5">
+                              <span className="w-5 h-5 rounded-full bg-[#16a34a] text-white flex items-center justify-center font-black text-[9px]">
+                                #{item.positionNumber}
+                              </span>
+                              <div>
+                                <span className="font-black text-gray-800">{item.bookingId}</span>
+                                <span className="text-gray-400 font-semibold block">{item.fromStop} ➔ {item.toStop}</span>
                               </div>
-                              <span className="text-[9px] text-gray-400 font-semibold block mt-1">{rec.fromStop} ➔ {rec.toStop}</span>
                             </div>
-                            <button
-                              onClick={() => handleAcceptRecommendation(selectedVehicleObj.vehicleId, rec.bookingId)}
-                              className="px-3.5 py-1.5 bg-[#16a34a]/10 hover:bg-[#16a34a] text-[#16a34a] hover:text-white rounded-lg text-[10px] font-black transition-colors border-none cursor-pointer"
-                            >
-                              Onboard Load
-                            </button>
+                            <div className="text-right">
+                              <span className="font-black text-[#16a34a] block">{item.volume} m³ · {item.weight} kg</span>
+                              <span className="text-[8px] font-black uppercase text-gray-400">{item.positionLabel}</span>
+                            </div>
                           </div>
                         ))}
                       </div>
                     )}
                   </div>
+
+                  {/* Stop Verification History (Audit Trail) */}
+                  <div className="py-5">
+                    <h3 className="text-[11px] font-black text-gray-900 uppercase tracking-widest mb-3">Stop Verification Audit History</h3>
+                    {transitHistory.length === 0 ? (
+                      <p className="text-xs text-gray-400 italic">No stop verification scans recorded for this vehicle yet.</p>
+                    ) : (
+                      <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                        {transitHistory.map(evt => (
+                          <div key={evt._id} className="bg-gray-50/70 p-3 rounded-xl border border-gray-100 text-[10px] space-y-1.5">
+                            <div className="flex justify-between items-center font-black text-gray-800">
+                              <div className="flex items-center space-x-1.5">
+                                <ShieldCheck className="w-3.5 h-3.5 text-[#16a34a]" />
+                                <span>{evt.locationName} Stop (Scan #{evt.sequenceNumber})</span>
+                              </div>
+                              <span className="text-[9px] text-gray-400 font-semibold">{new Date(evt.timestamp).toLocaleString()}</span>
+                            </div>
+                            <div className="flex justify-between items-center text-gray-500 font-bold text-[9px]">
+                              <span>Unloaded: {evt.packagesUnloaded?.length || 0} pkgs · Loaded: {evt.packagesLoaded?.length || 0} pkgs</span>
+                              <span>Volume after: {evt.volumeAfter} m³ · Weight after: {evt.weightAfter} kg</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
                 </div>
 
                 {/* Remove button */}
@@ -798,7 +901,16 @@ const SplitViewConsole = () => {
                         <span className="text-sm font-black text-gray-800">{selectedRouteObj.source} ➔ {selectedRouteObj.destination}</span>
                       </div>
                     </div>
-                    <span className="px-2.5 py-1 rounded-full text-[10px] font-black bg-blue-50 text-blue-700 border border-blue-100 uppercase tracking-widest">{selectedRouteObj.distance} KM Distance</span>
+                    <div className="flex items-center space-x-2">
+                      <button
+                        onClick={() => { setQrModalRoute(selectedRouteObj); setShowQrModal(true); }}
+                        className="flex items-center space-x-1.5 px-3.5 py-2 bg-green-50 hover:bg-green-100 text-[#16a34a] border border-green-200 rounded-xl text-[11px] font-black cursor-pointer shadow-sm transition-colors"
+                      >
+                        <QrCode className="w-3.5 h-3.5" />
+                        <span>View / Print Stop QR Tokens</span>
+                      </button>
+                      <span className="px-2.5 py-1 rounded-full text-[10px] font-black bg-blue-50 text-blue-700 border border-blue-100 uppercase tracking-widest">{selectedRouteObj.distance} KM Distance</span>
+                    </div>
                   </div>
 
                   {/* Route Stats */}
@@ -1114,6 +1226,127 @@ const SplitViewConsole = () => {
 
               <button type="submit" className="w-full py-3 bg-[#16a34a] hover:bg-[#15803d] text-white font-black rounded-xl text-[12px] shadow-md border-none cursor-pointer">Register Lane</button>
             </form>
+          </div>
+      {/* ── MODAL: ROUTE QR CODES ───────────────────────────────── */}
+      {showQrModal && (
+        <RouteQrModal
+          route={qrModalRoute}
+          onClose={() => { setShowQrModal(false); setQrModalRoute(null); }}
+          onRefresh={() => {
+            fetchData();
+            if (selectedRouteId) fetchRouteDetails(selectedRouteId);
+          }}
+        />
+      )}
+
+      {/* ── MODAL: STOP VERIFICATION SCANNER INPUT ─────────────── */}
+      {showScanModal && (
+        <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-3xl border border-gray-100 shadow-2xl max-w-md w-full p-6 text-left space-y-4">
+            <div className="flex justify-between items-center border-b border-gray-100 pb-3">
+              <div className="flex items-center space-x-2 text-[#16a34a]">
+                <QrCode className="w-5 h-5" />
+                <h3 className="text-sm font-black text-gray-900 uppercase tracking-widest">Verify Physical Stop</h3>
+              </div>
+              <button onClick={() => setShowScanModal(false)} className="w-8 h-8 rounded-full bg-gray-50 flex items-center justify-center text-gray-400 hover:bg-gray-100 border-none cursor-pointer"><X className="w-4 h-4" /></button>
+            </div>
+
+            <form onSubmit={handleExecuteScan} className="space-y-4 text-[11px] font-bold text-gray-500">
+              <div>
+                <label className="block uppercase tracking-wider mb-1">Truck Vehicle ID</label>
+                <input
+                  type="text"
+                  value={scanVehicleId}
+                  onChange={e => setScanVehicleId(e.target.value)}
+                  required
+                  placeholder="e.g. TRUCK-101"
+                  className={inputCls}
+                />
+              </div>
+
+              <div>
+                <label className="block uppercase tracking-wider mb-1">Scanned Stop QR Token String</label>
+                <input
+                  type="text"
+                  value={scanToken}
+                  onChange={e => setScanToken(e.target.value)}
+                  required
+                  placeholder="e.g. STPTKN-a1b2c3d4..."
+                  className={inputCls}
+                />
+              </div>
+
+              <div className="bg-amber-50 border border-amber-100 text-amber-800 p-3 rounded-xl text-[10px] font-semibold">
+                Scanning this QR token will verify physical truck arrival, execute atomic cargo loading/unloading, and recalculate segment capacity.
+              </div>
+
+              <button
+                type="submit"
+                disabled={scanSubmitting}
+                className="w-full py-3.5 bg-[#16a34a] hover:bg-[#15803d] text-white font-black rounded-xl text-xs shadow-md border-none cursor-pointer flex items-center justify-center space-x-2"
+              >
+                {scanSubmitting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+                <span>AUTHORIZE STOP SCAN</span>
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── MODAL: VERIFICATION RESULT SUMMARY ──────────────────── */}
+      {scanResultModal && (
+        <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-3xl border border-gray-100 shadow-2xl max-w-lg w-full p-6 text-left space-y-5">
+            <div className="flex justify-between items-center border-b border-gray-100 pb-3">
+              <div className="flex items-center space-x-2 text-[#16a34a]">
+                <CheckCircle className="w-6 h-6" />
+                <div>
+                  <h3 className="text-base font-black text-gray-900">Stop Verification Executed</h3>
+                  <span className="text-[10px] text-gray-400 font-semibold">{scanResultModal.arrivalTime}</span>
+                </div>
+              </div>
+              <button onClick={() => setScanResultModal(null)} className="w-8 h-8 rounded-full bg-gray-50 flex items-center justify-center text-gray-400 hover:bg-gray-100 border-none cursor-pointer"><X className="w-4 h-4" /></button>
+            </div>
+
+            <div className="bg-green-50/70 border border-green-100 p-4 rounded-2xl space-y-2">
+              <div className="flex justify-between text-xs font-black text-gray-900">
+                <span>Verified Stop: <span className="text-[#16a34a]">{scanResultModal.stop}</span></span>
+                <span>Vehicle: {scanResultModal.vehicleId}</span>
+              </div>
+              <p className="text-[11px] text-gray-600 font-semibold">{scanResultModal.message}</p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-gray-50 p-3.5 rounded-xl border border-gray-100">
+                <span className="text-[9px] font-black uppercase text-gray-400 block mb-1">Unloaded at Stop</span>
+                <span className="text-lg font-black text-amber-600">{scanResultModal.operations?.unloadedCount || 0} Packages</span>
+              </div>
+              <div className="bg-gray-50 p-3.5 rounded-xl border border-gray-100">
+                <span className="text-[9px] font-black uppercase text-gray-400 block mb-1">Loaded at Stop</span>
+                <span className="text-lg font-black text-green-600">{scanResultModal.operations?.loadedCount || 0} Packages</span>
+              </div>
+            </div>
+
+            {scanResultModal.capacityAfter && (
+              <div className="bg-gray-50 p-3.5 rounded-xl border border-gray-100 text-[10px] font-semibold space-y-1">
+                <span className="text-[9px] font-black uppercase text-gray-400 block mb-1">Post-Stop Capacity Status</span>
+                <div className="flex justify-between text-gray-800">
+                  <span>Volume: {scanResultModal.capacityAfter.usedVolume} / {scanResultModal.capacityAfter.capacityVolume} m³</span>
+                  <span className="text-[#16a34a] font-bold">({scanResultModal.capacityAfter.remainingVolume} m³ remaining)</span>
+                </div>
+                <div className="flex justify-between text-gray-800">
+                  <span>Weight: {scanResultModal.capacityAfter.usedWeight} / {scanResultModal.capacityAfter.capacityWeight} kg</span>
+                  <span className="text-[#16a34a] font-bold">({scanResultModal.capacityAfter.remainingWeight} kg remaining)</span>
+                </div>
+              </div>
+            )}
+
+            <button
+              onClick={() => setScanResultModal(null)}
+              className="w-full py-3 bg-gray-900 hover:bg-black text-white font-black rounded-xl text-xs shadow-md border-none cursor-pointer"
+            >
+              Done & Close
+            </button>
           </div>
         </div>
       )}

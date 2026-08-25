@@ -6,6 +6,7 @@ import CarrierLayout  from './components/ui/CarrierLayout';
 // Public views
 import Login  from './views/Login';
 import Signup from './views/Signup';
+import StopScan from './views/StopScan';
 
 // BI Analytics views
 import CarrierDashboard from './views/CarrierDashboard';
@@ -40,6 +41,7 @@ function App() {
           {/* Public */}
           <Route path="/login"  element={<Login />}  />
           <Route path="/signup" element={<Signup />} />
+          <Route path="/stop-scan" element={<StopScan />} />
 
           {/* Home (Executive Dashboard) */}
           <Route path="/" element={

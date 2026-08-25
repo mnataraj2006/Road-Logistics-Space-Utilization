@@ -60,8 +60,8 @@ const vehicleSchema = new mongoose.Schema({
   transitStatus: {
     type: String,
     required: true,
-    enum: ['Idle', 'In Transit', 'At Stop'],
-    default: 'Idle'
+    enum: ['READY', 'DISPATCHED', 'IN_TRANSIT', 'AT_STOP', 'COMPLETED', 'Idle'],
+    default: 'READY'
   },
   currentStop: {
     type: String,
@@ -71,6 +71,11 @@ const vehicleSchema = new mongoose.Schema({
   currentRouteIndex: {
     type: Number,
     default: 0
+  },
+  activeTripId: {
+    type: String,
+    trim: true,
+    default: ''
   },
   assignedDriverId: {
     type: String,

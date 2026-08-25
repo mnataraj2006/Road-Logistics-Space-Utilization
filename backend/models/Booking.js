@@ -100,8 +100,16 @@ const bookingSchema = new mongoose.Schema({
   status: {
     type: String,
     required: true,
-    enum: ['Pending', 'In Transit', 'Completed', 'Cancelled'],
-    default: 'Pending'
+    enum: [
+      'Pending', 'PENDING',
+      'ALLOCATED',
+      'WAITING_FOR_PICKUP',
+      'LOADED',
+      'In Transit', 'IN_TRANSIT',
+      'DELIVERED', 'Completed',
+      'Cancelled'
+    ],
+    default: 'PENDING'
   },
   loadedAt: {
     type: Date,

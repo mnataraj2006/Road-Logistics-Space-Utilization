@@ -3,6 +3,7 @@ import Vehicle from '../models/Vehicle.js';
 import Route from '../models/Route.js';
 import User from '../models/User.js';
 import Payment from '../models/Payment.js';
+import { calculateTruckSegmentCapacity } from '../services/capacityService.js';
 
 // @desc    Get all bookings
 // @route   GET /api/bookings
@@ -574,47 +575,124 @@ export const releasePayment = async (req, res) => {
   }
 };
 
-// @desc    Bulk update booking vehicle assignments
+// @desc    Bulk update/commit optimizer booking vehicle allocations with server-side validation
 // @route   POST /api/bookings/bulk-update
 // @access  Private
 export const bulkUpdateBookings = async (req, res) => {
   const { assignments } = req.body; // Array of { bookingId, vehicleId, status }
 
-  if (!assignments || !Array.isArray(assignments)) {
-    return res.status(400).json({ message: 'Invalid assignments format' });
+  if (!assignments || !Array.isArray(assignments) || assignments.length === 0) {
+    return res.status(400).json({ message: 'Invalid or empty assignments format.' });
   }
 
   try {
-    const promises = assignments.map(async (assign) => {
-      const vehicle = await Vehicle.findOne({ vehicleId: assign.vehicleId });
-      if (!vehicle) throw new Error(`Vehicle ${assign.vehicleId} not found`);
+    // Phase 1: Group proposed allocations by vehicleId for strict validation
+    const vehicleAssignmentsMap = new Map();
 
-      let routeRef = null;
-      let routeIdVal = 'UNASSIGNED';
-      if (vehicle.routeLane && vehicle.routeLane !== 'Inactive Lane') {
-        const routeObj = await Route.findOne({ routeId: vehicle.routeLane });
-        if (routeObj) {
-          routeRef = routeObj._id;
-          routeIdVal = routeObj.routeId;
-        }
+    for (const assign of assignments) {
+      if (!assign.bookingId || !assign.vehicleId) {
+        return res.status(400).json({ message: 'Each assignment must specify bookingId and vehicleId.' });
+      }
+      if (!vehicleAssignmentsMap.has(assign.vehicleId)) {
+        vehicleAssignmentsMap.set(assign.vehicleId, []);
+      }
+      vehicleAssignmentsMap.get(assign.vehicleId).push(assign);
+    }
+
+    const validatedBookingsToUpdate = [];
+
+    // Phase 2: Validate allocations per vehicle against database business rules & segment capacity
+    for (const [vehicleId, vehicleAssigns] of vehicleAssignmentsMap.entries()) {
+      const vehicle = await Vehicle.findOne({ vehicleId });
+      if (!vehicle) {
+        return res.status(404).json({ message: `Validation failed: Vehicle '${vehicleId}' not found.` });
+      }
+      if (vehicle.status !== 'Active') {
+        return res.status(400).json({ message: `Validation failed: Vehicle '${vehicleId}' is inactive.` });
       }
 
-      return Booking.findOneAndUpdate(
-        { bookingId: assign.bookingId },
-        { 
-          vehicle: vehicle._id,
-          vehicleId: assign.vehicleId,
-          route: routeRef,
-          routeId: routeIdVal,
-          status: assign.status || 'Completed'
-        },
-        { new: true }
-      );
+      const route = vehicle.routeLane ? await Route.findOne({ routeId: vehicle.routeLane }) : null;
+      if (!route) {
+        return res.status(400).json({ message: `Validation failed: Vehicle '${vehicleId}' has no valid assigned route.` });
+      }
+
+      // Fetch current active bookings on this vehicle
+      const existingBookings = await Booking.find({
+        vehicleId,
+        status: { $in: ['Pending', 'PENDING', 'ALLOCATED', 'WAITING_FOR_PICKUP', 'LOADED', 'In Transit', 'IN_TRANSIT'] }
+      });
+
+      const simulatedBookingsList = [...existingBookings];
+
+      for (const assign of vehicleAssigns) {
+        const booking = await Booking.findOne({ bookingId: assign.bookingId });
+        if (!booking) {
+          return res.status(404).json({ message: `Validation failed: Booking '${assign.bookingId}' not found.` });
+        }
+
+        // Verify pickup and delivery stops exist on vehicle's route
+        const stops = route.stopsDetails && route.stopsDetails.length > 0
+          ? route.stopsDetails.map(s => s.locationName.toLowerCase())
+          : (route.stops || []).map(s => s.toLowerCase());
+
+        const fromIdx = stops.indexOf((booking.fromStop || '').toLowerCase());
+        const toIdx = stops.indexOf((booking.toStop || '').toLowerCase());
+
+        if (fromIdx === -1 || toIdx === -1) {
+          return res.status(400).json({
+            message: `Validation failed: Booking '${booking.bookingId}' stops (${booking.fromStop} ➔ ${booking.toStop}) are not served by route '${route.routeId}'.`
+          });
+        }
+
+        if (fromIdx >= toIdx) {
+          return res.status(400).json({
+            message: `Validation failed: Booking '${booking.bookingId}' direction is invalid for route '${route.routeId}'.`
+          });
+        }
+
+        simulatedBookingsList.push(booking);
+        validatedBookingsToUpdate.push({
+          booking,
+          assign,
+          vehicle,
+          route
+        });
+      }
+
+      // Check cumulative segment capacity after adding all proposed allocations
+      const capacityCheck = calculateTruckSegmentCapacity(vehicle, route, simulatedBookingsList);
+
+      for (const seg of capacityCheck.segments) {
+        if (seg.usedVolume > vehicle.capacityVolume || seg.usedWeight > vehicle.capacityWeight) {
+          return res.status(400).json({
+            message: `Capacity validation failed for truck '${vehicleId}' on segment '${seg.fromStop} ➔ ${seg.toStop}'. Projected volume (${seg.usedVolume} m³) or weight (${seg.usedWeight} kg) exceeds capacity (${vehicle.capacityVolume} m³, ${vehicle.capacityWeight} kg).`
+          });
+        }
+      }
+    }
+
+    // Phase 3: Atomic update execution after 100% validation pass
+    const updatePromises = validatedBookingsToUpdate.map(async ({ booking, assign, vehicle, route }) => {
+      booking.vehicle = vehicle._id;
+      booking.vehicleId = vehicle.vehicleId;
+      booking.carrier = vehicle.carrier;
+      booking.carrierId = vehicle.carrierId;
+      booking.route = route._id;
+      booking.routeId = route.routeId;
+      
+      // Target status transition
+      booking.status = assign.status || 'ALLOCATED';
+      return booking.save();
     });
 
-    await Promise.all(promises);
-    res.json({ message: 'Bookings updated successfully' });
+    await Promise.all(updatePromises);
+
+    res.json({
+      success: true,
+      message: `Optimizer allocations committed successfully. Updated ${validatedBookingsToUpdate.length} bookings.`,
+      updatedCount: validatedBookingsToUpdate.length
+    });
   } catch (error) {
-    res.status(400).json({ message: error.message });
+    res.status(500).json({ message: error.message });
   }
 };
