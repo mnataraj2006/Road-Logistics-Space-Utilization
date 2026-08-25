@@ -1,105 +1,202 @@
 import crypto from 'crypto';
+import mongoose from 'mongoose';
 import Vehicle from '../models/Vehicle.js';
 import Route from '../models/Route.js';
-import Booking from '../models/Booking.js';
+import Booking, { isValidBookingStatusTransition } from '../models/Booking.js';
 import Payment from '../models/Payment.js';
 import StopVerification from '../models/StopVerification.js';
 import { calculateTruckSegmentCapacity, getRemainingCapacityForTruck } from '../services/capacityService.js';
 
 /**
- * Dispatch truck for trip start. Loads origin packages, leaves future pickup packages as WAITING_FOR_PICKUP.
+ * Helper to execute code within a Mongoose transaction session.
+ * Handles standalone mongod fallback gracefully if transactions are not supported.
+ */
+const runTransaction = async (workFn) => {
+  const session = await mongoose.startSession();
+  let transactionStarted = false;
+
+  try {
+    try {
+      session.startTransaction();
+      transactionStarted = true;
+    } catch (err) {
+      console.warn('MongoDB session.startTransaction not available; executing in session mode.');
+    }
+
+    const result = await workFn(session);
+
+    if (transactionStarted) {
+      await session.commitTransaction();
+    }
+    return result;
+  } catch (error) {
+    if (transactionStarted) {
+      try {
+        await session.abortTransaction();
+      } catch (abortErr) {
+        console.error('Error aborting transaction:', abortErr);
+      }
+    }
+    throw error;
+  } finally {
+    session.endSession();
+  }
+};
+
+/**
+ * Transactional Dispatch Truck for trip start.
+ * Loads origin packages, leaves future pickup packages as WAITING_FOR_PICKUP.
  * @route POST /api/transit/dispatch/:vehicleId
  */
 export const dispatchTruck = async (req, res) => {
   const { vehicleId } = req.params;
 
   try {
-    const vehicle = await Vehicle.findOne({ vehicleId });
-    if (!vehicle) return res.status(404).json({ message: 'Vehicle not found.' });
-
-    if (vehicle.status !== 'Active') {
-      return res.status(400).json({ message: 'Vehicle is not in Active status.' });
-    }
-
-    if (!vehicle.routeLane || vehicle.routeLane === 'Inactive Lane') {
-      return res.status(400).json({ message: 'Vehicle has no assigned route lane.' });
-    }
-
-    const route = await Route.findOne({ routeId: vehicle.routeLane });
-    if (!route || !route.stopsDetails || route.stopsDetails.length < 2) {
-      return res.status(400).json({ message: 'Assigned route has invalid stop details.' });
-    }
-
-    const tripId = `TRIP-${Date.now()}`;
-    const originStopName = route.stopsDetails[0].locationName;
-
-    // Update Vehicle state to DISPATCHED / IN_TRANSIT
-    vehicle.transitStatus = 'IN_TRANSIT';
-    vehicle.currentStop = '';
-    vehicle.currentRouteIndex = 0;
-    vehicle.tripStartedAt = new Date();
-    vehicle.activeTripId = tripId;
-    await vehicle.save();
-
-    // Fetch all active bookings assigned to this vehicle
-    const activeBookings = await Booking.find({
-      vehicleId,
-      status: { $in: ['Pending', 'PENDING', 'ALLOCATED', 'WAITING_FOR_PICKUP'] }
-    });
-
-    const loadedPackages = [];
-    const waitingPackages = [];
-
-    // Process pickup status for trip start
-    const updatePromises = activeBookings.map(async (bkg) => {
-      const isOriginPickup = bkg.fromStop && bkg.fromStop.toLowerCase() === originStopName.toLowerCase();
-      
-      if (isOriginPickup) {
-        bkg.status = 'IN_TRANSIT';
-        bkg.loadedAt = new Date();
-        loadedPackages.push(bkg);
-      } else {
-        bkg.status = 'WAITING_FOR_PICKUP';
-        waitingPackages.push(bkg);
+    const result = await runTransaction(async (session) => {
+      // 1. Verify truck exists
+      const vehicle = await Vehicle.findOne({ vehicleId }).session(session);
+      if (!vehicle) {
+        throw { status: 404, message: 'Truck not found.' };
       }
-      return bkg.save();
+
+      // 2. Verify truck active status
+      if (vehicle.status !== 'Active') {
+        throw { status: 400, message: 'Truck is not active.' };
+      }
+
+      // 3. Verify truck is not already in transit
+      if (vehicle.transitStatus !== 'READY' && vehicle.transitStatus !== 'Idle') {
+        throw { status: 400, message: `Truck is already in transit (Status: '${vehicle.transitStatus}').` };
+      }
+
+      // 4. Verify route exists and has stops
+      if (!vehicle.routeLane || vehicle.routeLane === 'Inactive Lane') {
+        throw { status: 400, message: 'Truck has no assigned route lane.' };
+      }
+
+      const route = await Route.findOne({ routeId: vehicle.routeLane }).session(session);
+      if (!route || !route.stopsDetails || route.stopsDetails.length < 2) {
+        throw { status: 400, message: 'Assigned route has invalid or insufficient stop details.' };
+      }
+
+      // 5. Verify origin stop
+      const originStopName = route.stopsDetails[0].locationName;
+
+      // 6. Find packages assigned to truck
+      const activeBookings = await Booking.find({
+        vehicleId,
+        status: { $in: ['Pending', 'PENDING', 'ALLOCATED', 'WAITING_FOR_PICKUP'] }
+      }).session(session);
+
+      const loadedPackages = [];
+      const waitingPackages = [];
+
+      // Categorize packages into origin pickups vs future pickups
+      for (const bkg of activeBookings) {
+        const isOriginPickup = bkg.fromStop && bkg.fromStop.toLowerCase().trim() === originStopName.toLowerCase().trim();
+        if (isOriginPickup) {
+          loadedPackages.push(bkg);
+        } else {
+          waitingPackages.push(bkg);
+        }
+      }
+
+      // 7 & 8. Validate capacity for the first segment (origin packages ONLY)
+      const initialCapacityCheck = calculateTruckSegmentCapacity(vehicle, route, loadedPackages);
+      if (initialCapacityCheck.segments.length > 0) {
+        const firstSegment = initialCapacityCheck.segments[0];
+        if (firstSegment.usedVolume > vehicle.capacityVolume || firstSegment.usedWeight > vehicle.capacityWeight) {
+          throw {
+            status: 400,
+            message: 'Dispatch failed. Origin cargo exceeds truck capacity for the initial segment.',
+            details: {
+              segment: `${firstSegment.fromStop} → ${firstSegment.toStop}`,
+              volumeUsed: firstSegment.usedVolume,
+              volumeCapacity: vehicle.capacityVolume,
+              weightUsed: firstSegment.usedWeight,
+              weightCapacity: vehicle.capacityWeight
+            }
+          };
+        }
+      }
+
+      const tripId = `TRIP-${Date.now()}`;
+      const now = new Date();
+
+      // 9 & 10. Update package status
+      for (const bkg of loadedPackages) {
+        if (!isValidBookingStatusTransition(bkg.status, 'IN_TRANSIT')) {
+          throw { status: 400, message: `Invalid status transition for package ${bkg.bookingId}.` };
+        }
+        bkg.status = 'IN_TRANSIT';
+        bkg.loadedAt = now;
+        await bkg.save({ session });
+      }
+
+      for (const bkg of waitingPackages) {
+        if (!isValidBookingStatusTransition(bkg.status, 'WAITING_FOR_PICKUP')) {
+          throw { status: 400, message: `Invalid status transition for package ${bkg.bookingId}.` };
+        }
+        bkg.status = 'WAITING_FOR_PICKUP';
+        await bkg.save({ session });
+      }
+
+      // 11. Update truck transit status
+      vehicle.transitStatus = 'IN_TRANSIT';
+      vehicle.currentStop = '';
+      vehicle.currentRouteIndex = 0;
+      vehicle.tripStartedAt = now;
+      vehicle.activeTripId = tripId;
+      await vehicle.save({ session });
+
+      // 12. Update route stop details
+      route.stopsDetails[0].status = 'Completed';
+      route.stopsDetails[0].actualArrival = now;
+      route.stopsDetails[0].completedAt = now;
+
+      if (route.stopsDetails[1]) {
+        route.stopsDetails[1].status = 'Ready';
+        route.stopsDetails[1].plannedArrival = now;
+      }
+      route.currentStopIndex = 0;
+      route.status = 'In Transit';
+      await route.save({ session });
+
+      return {
+        vehicle,
+        tripId,
+        originStop: originStopName,
+        nextExpectedStop: route.stopsDetails[1] ? route.stopsDetails[1].locationName : '',
+        loadedCount: loadedPackages.length,
+        waitingCount: waitingPackages.length
+      };
     });
 
-    await Promise.all(updatePromises);
-
-    // Update Route stop states
-    route.stopsDetails[0].status = 'Completed';
-    route.stopsDetails[0].actualArrival = new Date();
-    route.stopsDetails[0].completedAt = new Date();
-
-    if (route.stopsDetails[1]) {
-      route.stopsDetails[1].status = 'Ready';
-      route.stopsDetails[1].plannedArrival = new Date();
-    }
-    route.currentStopIndex = 0;
-    await route.save();
-
-    // Calculate capacity summary
     const capacitySummary = await getRemainingCapacityForTruck(vehicleId);
 
     res.json({
       success: true,
-      message: `Truck ${vehicleId} dispatched on route ${route.routeId}. Loaded ${loadedPackages.length} packages at origin (${originStopName}). ${waitingPackages.length} packages set to WAITING_FOR_PICKUP for downstream stops.`,
-      vehicle,
-      tripId,
-      originStop: originStopName,
-      nextExpectedStop: route.stopsDetails[1] ? route.stopsDetails[1].locationName : '',
-      loadedCount: loadedPackages.length,
-      waitingCount: waitingPackages.length,
+      message: `Truck ${vehicleId} dispatched on route ${result.vehicle.routeLane}. Loaded ${result.loadedCount} packages at origin (${result.originStop}). ${result.waitingCount} packages set to WAITING_FOR_PICKUP for downstream stops.`,
+      vehicle: result.vehicle,
+      tripId: result.tripId,
+      originStop: result.originStop,
+      nextExpectedStop: result.nextExpectedStop,
+      loadedCount: result.loadedCount,
+      waitingCount: result.waitingCount,
       capacitySummary
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error('Dispatch transaction error:', error);
+    res.status(error.status || 500).json({
+      success: false,
+      message: error.message || 'Dispatch failed due to server error.',
+      details: error.details || null
+    });
   }
 };
 
 /**
- * Server-side QR Stop Verification with 9-Point Security Check
+ * Server-Side Transactional QR Stop Verification with 15-Step Validation Pipeline
  * @route POST /api/transit/verify-stop
  */
 export const verifyStop = async (req, res) => {
@@ -113,235 +210,283 @@ export const verifyStop = async (req, res) => {
   }
 
   try {
-    // 1. Check Vehicle exists
-    const vehicle = await Vehicle.findOne({ vehicleId });
-    if (!vehicle) {
-      return res.status(404).json({ success: false, message: `Vehicle '${vehicleId}' not found.` });
-    }
-
-    // 2. Check Vehicle active status
-    if (vehicle.status !== 'Active') {
-      return res.status(400).json({ success: false, message: `Vehicle '${vehicleId}' is inactive or out of service.` });
-    }
-
-    // 3. Check Route assignment
-    if (!vehicle.routeLane || vehicle.routeLane === 'Inactive Lane') {
-      return res.status(400).json({ success: false, message: `Vehicle '${vehicleId}' has no route assigned.` });
-    }
-
-    const route = await Route.findOne({ routeId: vehicle.routeLane });
-    if (!route || !route.stopsDetails || route.stopsDetails.length === 0) {
-      return res.status(404).json({ success: false, message: 'Assigned route missing stop configuration.' });
-    }
-
-    // 4 & 5. Verify QR token exists on assigned route
-    const stopIndex = route.stopsDetails.findIndex(s => s.qrToken === qrToken);
-    if (stopIndex === -1) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid stop QR token. Token does not belong to the truck\'s assigned route.'
-      });
-    }
-
-    const targetStop = route.stopsDetails[stopIndex];
-
-    // 8 & 9. Verify trip active status
-    if (vehicle.transitStatus === 'READY' || vehicle.transitStatus === 'Idle' || vehicle.transitStatus === 'COMPLETED') {
-      return res.status(400).json({
-        success: false,
-        message: `Vehicle '${vehicleId}' does not have an active trip in transit.`
-      });
-    }
-
-    // 7. Check if stop already verified (Duplicate scan protection)
-    if (targetStop.status === 'Completed') {
-      return res.status(400).json({
-        success: false,
-        message: `Stop '${targetStop.locationName}' has already been verified.`
-      });
-    }
-
-    // 6. Check sequential stop order (Expected next stop validation)
-    // Next expected index is currentRouteIndex + 1 (since currentRouteIndex is last verified stop index)
-    const expectedNextIndex = vehicle.currentRouteIndex + 1;
-    if (stopIndex !== expectedNextIndex) {
-      const expectedStopName = route.stopsDetails[expectedNextIndex]
-        ? route.stopsDetails[expectedNextIndex].locationName
-        : 'Unknown';
-      return res.status(400).json({
-        success: false,
-        message: `Invalid stop. Expected ${expectedStopName}. Scanned ${targetStop.locationName}.`
-      });
-    }
-
-    // Capacity BEFORE operations
-    const activeBookingsBefore = await Booking.find({
-      vehicleId,
-      status: { $in: ['Pending', 'PENDING', 'ALLOCATED', 'WAITING_FOR_PICKUP', 'LOADED', 'In Transit', 'IN_TRANSIT'] }
-    });
-    const capBefore = calculateTruckSegmentCapacity(vehicle, route, activeBookingsBefore);
-
-    // Transition vehicle to AT_STOP
-    vehicle.transitStatus = 'AT_STOP';
-    vehicle.currentStop = targetStop.locationName;
-    await vehicle.save();
-
-    // STEP A: UNLOAD PACKAGES (Delivery stop == current stop)
-    const bookingsToUnload = await Booking.find({
-      vehicleId,
-      status: { $in: ['LOADED', 'In Transit', 'IN_TRANSIT'] },
-      toStop: { $regex: new RegExp('^' + targetStop.locationName + '$', 'i') }
-    });
-
-    const unloadedDetails = [];
-    const unloadPromises = bookingsToUnload.map(async (bkg) => {
-      bkg.status = 'DELIVERED';
-      bkg.deliveredAt = new Date();
-      await bkg.save();
-
-      unloadedDetails.push({
-        bookingId: bkg.bookingId,
-        volume: bkg.volume,
-        weight: bkg.weight,
-        shipperId: bkg.shipperId,
-        fromStop: bkg.fromStop,
-        toStop: bkg.toStop
-      });
-
-      // Release payment escrow to carrier
-      const payment = await Payment.findOne({ bookingId: bkg.bookingId });
-      if (payment) {
-        payment.status = 'PaidOut';
-        await payment.save();
+    const result = await runTransaction(async (session) => {
+      // STEP 1: Find truck
+      const vehicle = await Vehicle.findOne({ vehicleId }).session(session);
+      if (!vehicle) {
+        throw { status: 404, message: `Truck '${vehicleId}' not found.` };
       }
-    });
-    await Promise.all(unloadPromises);
 
-    // STEP B: LOAD PACKAGES (Pickup stop == current stop)
-    const bookingsToLoad = await Booking.find({
-      vehicleId,
-      status: { $in: ['Pending', 'PENDING', 'ALLOCATED', 'WAITING_FOR_PICKUP'] },
-      fromStop: { $regex: new RegExp('^' + targetStop.locationName + '$', 'i') }
-    });
+      // STEP 2: Verify truck is active
+      if (vehicle.status !== 'Active') {
+        throw { status: 400, message: `Truck '${vehicleId}' is not active.` };
+      }
 
-    const loadedDetails = [];
-    const loadPromises = bookingsToLoad.map(async (bkg) => {
-      bkg.status = 'IN_TRANSIT';
-      bkg.loadedAt = new Date();
-      await bkg.save();
+      // STEP 3: Verify truck has active route/trip
+      if (!vehicle.routeLane || vehicle.routeLane === 'Inactive Lane') {
+        throw { status: 400, message: `Truck '${vehicleId}' has no route assigned.` };
+      }
 
-      loadedDetails.push({
-        bookingId: bkg.bookingId,
-        volume: bkg.volume,
-        weight: bkg.weight,
-        shipperId: bkg.shipperId,
-        fromStop: bkg.fromStop,
-        toStop: bkg.toStop
-      });
-    });
-    await Promise.all(loadPromises);
+      if (vehicle.transitStatus === 'READY' || vehicle.transitStatus === 'Idle' || vehicle.transitStatus === 'COMPLETED') {
+        throw { status: 400, message: 'No active trip found.' };
+      }
 
-    // Capacity AFTER operations
-    const activeBookingsAfter = await Booking.find({
-      vehicleId,
-      status: { $in: ['LOADED', 'In Transit', 'IN_TRANSIT', 'WAITING_FOR_PICKUP'] }
-    });
-    const capAfter = calculateTruckSegmentCapacity(vehicle, route, activeBookingsAfter);
+      const route = await Route.findOne({ routeId: vehicle.routeLane }).session(session);
+      if (!route || !route.stopsDetails || route.stopsDetails.length === 0) {
+        throw { status: 404, message: 'Assigned route missing stop configuration.' };
+      }
 
-    // Update stop state in Route
-    targetStop.status = 'Completed';
-    targetStop.actualArrival = new Date();
-    targetStop.completedAt = new Date();
+      // STEP 4 & STEP 5: Find QR token & verify QR belongs to this truck's route
+      const stopIndex = route.stopsDetails.findIndex(s => s.qrToken === qrToken);
+      if (stopIndex === -1) {
+        throw {
+          status: 400,
+          message: 'Invalid QR token. QR token does not belong to this truck\'s route.'
+        };
+      }
 
-    // Advance sequence index
-    vehicle.currentRouteIndex = stopIndex;
-    route.currentStopIndex = stopIndex;
+      const targetStop = route.stopsDetails[stopIndex];
 
-    const isFinalStop = stopIndex === route.stopsDetails.length - 1;
+      // STEP 6 & STEP 7: Find expected next stop & verify scanned stop equals expected stop
+      const expectedNextIndex = vehicle.currentRouteIndex + 1;
+      if (stopIndex !== expectedNextIndex) {
+        const expectedStopName = route.stopsDetails[expectedNextIndex]
+          ? route.stopsDetails[expectedNextIndex].locationName
+          : 'Unknown';
+        throw {
+          status: 400,
+          message: `Invalid stop. Expected ${expectedStopName}. Scanned ${targetStop.locationName}.`
+        };
+      }
 
-    let nextStopName = '';
-    if (isFinalStop) {
-      // Final stop reached! Verify all bookings delivered
-      const remainingUndelivered = await Booking.find({
+      // STEP 8: Verify stop has not already been completed (Duplicate scan protection)
+      if (targetStop.status === 'Completed') {
+        throw { status: 400, message: `Stop '${targetStop.locationName}' has already been verified.` };
+      }
+
+      // STEP 9: Find packages assigned to this truck
+      const allAssignedBookings = await Booking.find({
         vehicleId,
-        status: { $in: ['LOADED', 'In Transit', 'IN_TRANSIT'] }
+        status: { $in: ['Pending', 'PENDING', 'ALLOCATED', 'WAITING_FOR_PICKUP', 'LOADED', 'In Transit', 'IN_TRANSIT'] }
+      }).session(session);
+
+      // STEP 10: Determine packages to unload (delivery stop == current stop)
+      const packagesToUnload = allAssignedBookings.filter(bkg => {
+        const isLoaded = ['LOADED', 'In Transit', 'IN_TRANSIT'].includes(bkg.status);
+        const matchesDelivery = bkg.toStop && bkg.toStop.toLowerCase().trim() === targetStop.locationName.toLowerCase().trim();
+        return isLoaded && matchesDelivery;
       });
 
-      // Auto-unload any remaining items at final stop
-      if (remainingUndelivered.length > 0) {
-        for (const bkg of remainingUndelivered) {
-          bkg.status = 'DELIVERED';
-          bkg.deliveredAt = new Date();
-          await bkg.save();
+      // STEP 11: Determine packages to load (pickup stop == current stop & WAITING_FOR_PICKUP / ALLOCATED)
+      const packagesToLoadCandidate = allAssignedBookings.filter(bkg => {
+        const isWaiting = ['Pending', 'PENDING', 'ALLOCATED', 'WAITING_FOR_PICKUP'].includes(bkg.status);
+        const matchesPickup = bkg.fromStop && bkg.fromStop.toLowerCase().trim() === targetStop.locationName.toLowerCase().trim();
+        return isWaiting && matchesPickup;
+      });
+
+      // STEP 12: Calculate capacity before operations
+      const capBefore = calculateTruckSegmentCapacity(vehicle, route, allAssignedBookings);
+
+      // STEP 13 & STEP 14 & STEP 15: SIMULATE UNLOAD, LOAD, AND VALIDATE CAPACITY
+      // Remaining loaded packages = currently loaded - unloaded
+      const currentlyLoaded = allAssignedBookings.filter(bkg => ['LOADED', 'In Transit', 'IN_TRANSIT'].includes(bkg.status));
+      const unloadIds = new Set(packagesToUnload.map(b => b._id.toString()));
+      const remainingLoaded = currentlyLoaded.filter(b => !unloadIds.has(b._id.toString()));
+
+      // Downstream waiting packages (not picked up yet at this stop)
+      const downstreamWaiting = allAssignedBookings.filter(bkg => {
+        const isWaiting = ['Pending', 'PENDING', 'ALLOCATED', 'WAITING_FOR_PICKUP'].includes(bkg.status);
+        const matchesPickup = bkg.fromStop && bkg.fromStop.toLowerCase().trim() === targetStop.locationName.toLowerCase().trim();
+        return isWaiting && !matchesPickup;
+      });
+
+      // Simulated active bookings after this stop verification
+      const simulatedActiveBookings = [
+        ...remainingLoaded,
+        ...packagesToLoadCandidate,
+        ...downstreamWaiting
+      ];
+
+      // Calculate simulated capacity across remaining route segments
+      const capSimulated = calculateTruckSegmentCapacity(vehicle, route, simulatedActiveBookings);
+
+      // Inspect segment capacity for remaining route legs (from current stopIndex onwards)
+      for (let i = stopIndex; i < capSimulated.segments.length; i++) {
+        const seg = capSimulated.segments[i];
+        if (seg.usedVolume > vehicle.capacityVolume || seg.usedWeight > vehicle.capacityWeight) {
+          throw {
+            status: 400,
+            message: 'Stop operation cannot be completed because the assigned load exceeds remaining truck capacity.',
+            details: {
+              segment: `${seg.fromStop} → ${seg.toStop}`,
+              volumeUsed: seg.usedVolume,
+              volumeCapacity: vehicle.capacityVolume,
+              weightUsed: seg.usedWeight,
+              weightCapacity: vehicle.capacityWeight
+            }
+          };
         }
       }
 
-      vehicle.transitStatus = 'COMPLETED';
-      vehicle.currentStop = targetStop.locationName;
-      vehicle.activeTripId = '';
-      route.status = 'Completed';
-    } else {
-      // Transition back to IN_TRANSIT for segment travel
-      vehicle.transitStatus = 'IN_TRANSIT';
-      vehicle.currentStop = '';
-      const nextStop = route.stopsDetails[stopIndex + 1];
-      if (nextStop) {
-        nextStop.status = 'Ready';
-        nextStopName = nextStop.locationName;
+      // ALL VALIDATION SUCCEEDED: PERFORM DATABASE WRITES INSIDE TRANSACTION
+
+      const now = new Date();
+      const unloadedDetails = [];
+      const loadedDetails = [];
+
+      // UNLOAD PACKAGES FIRST
+      for (const bkg of packagesToUnload) {
+        if (!isValidBookingStatusTransition(bkg.status, 'DELIVERED')) {
+          throw { status: 400, message: `Invalid status transition to DELIVERED for package ${bkg.bookingId}.` };
+        }
+        bkg.status = 'DELIVERED';
+        bkg.deliveredAt = now;
+        await bkg.save({ session });
+
+        unloadedDetails.push({
+          bookingId: bkg.bookingId,
+          volume: bkg.volume,
+          weight: bkg.weight,
+          shipperId: bkg.shipperId,
+          fromStop: bkg.fromStop,
+          toStop: bkg.toStop
+        });
+
+        // Release payment escrow
+        const payment = await Payment.findOne({ bookingId: bkg.bookingId }).session(session);
+        if (payment) {
+          payment.status = 'PaidOut';
+          await payment.save({ session });
+        }
       }
-    }
 
-    await route.save();
-    await vehicle.save();
+      // LOAD NEW PACKAGES SECOND
+      for (const bkg of packagesToLoadCandidate) {
+        if (!isValidBookingStatusTransition(bkg.status, 'IN_TRANSIT')) {
+          throw { status: 400, message: `Invalid status transition to IN_TRANSIT for package ${bkg.bookingId}.` };
+        }
+        bkg.status = 'IN_TRANSIT';
+        bkg.loadedAt = now;
+        await bkg.save({ session });
 
-    // Create Audit History Record
-    const auditRecord = new StopVerification({
-      vehicleId,
-      routeId: route.routeId,
-      stopId: targetStop.stopId,
-      locationName: targetStop.locationName,
-      sequenceNumber: targetStop.sequenceNumber,
-      timestamp: new Date(),
-      verificationMethod: 'QR',
-      packagesUnloaded: unloadedDetails,
-      packagesLoaded: loadedDetails,
-      volumeBefore: capBefore.usedVolume,
-      volumeAfter: capAfter.usedVolume,
-      weightBefore: capBefore.usedWeight,
-      weightAfter: capAfter.usedWeight
+        loadedDetails.push({
+          bookingId: bkg.bookingId,
+          volume: bkg.volume,
+          weight: bkg.weight,
+          shipperId: bkg.shipperId,
+          fromStop: bkg.fromStop,
+          toStop: bkg.toStop
+        });
+      }
+
+      // Update Route Stop
+      targetStop.status = 'Completed';
+      targetStop.actualArrival = now;
+      targetStop.completedAt = now;
+
+      // Update indices
+      vehicle.currentRouteIndex = stopIndex;
+      route.currentStopIndex = stopIndex;
+
+      const isFinalStop = stopIndex === route.stopsDetails.length - 1;
+      let nextStopName = '';
+
+      if (isFinalStop) {
+        // FINAL STOP VALIDATION: Check if any undelivered packages remain
+        const undeliveredPackages = await Booking.find({
+          vehicleId,
+          status: { $in: ['Pending', 'PENDING', 'ALLOCATED', 'WAITING_FOR_PICKUP', 'LOADED', 'In Transit', 'IN_TRANSIT'] }
+        }).session(session);
+
+        if (undeliveredPackages.length > 0) {
+          throw {
+            status: 400,
+            message: `Cannot complete trip. Undelivered packages remain (${undeliveredPackages.length} package(s) undelivered).`,
+            details: { undeliveredCount: undeliveredPackages.length, undeliveredIds: undeliveredPackages.map(b => b.bookingId) }
+          };
+        }
+
+        vehicle.transitStatus = 'COMPLETED';
+        vehicle.currentStop = targetStop.locationName;
+        vehicle.activeTripId = '';
+        route.status = 'Completed';
+      } else {
+        vehicle.transitStatus = 'IN_TRANSIT';
+        vehicle.currentStop = '';
+        const nextStop = route.stopsDetails[stopIndex + 1];
+        if (nextStop) {
+          nextStop.status = 'Ready';
+          nextStopName = nextStop.locationName;
+        }
+      }
+
+      await route.save({ session });
+      await vehicle.save({ session });
+
+      // Create Audit History Record
+      const auditRecord = new StopVerification({
+        vehicleId,
+        routeId: route.routeId,
+        stopId: targetStop.stopId,
+        locationName: targetStop.locationName,
+        sequenceNumber: targetStop.sequenceNumber,
+        timestamp: now,
+        verificationMethod: 'QR',
+        packagesUnloaded: unloadedDetails,
+        packagesLoaded: loadedDetails,
+        volumeBefore: capBefore.usedVolume,
+        volumeAfter: capSimulated.usedVolume,
+        weightBefore: capBefore.usedWeight,
+        weightAfter: capSimulated.usedWeight
+      });
+      await auditRecord.save({ session });
+
+      return {
+        auditRecord,
+        vehicle,
+        targetStop,
+        unloadedDetails,
+        loadedDetails,
+        capSimulated,
+        nextStopName,
+        isFinalStop
+      };
     });
-    await auditRecord.save();
 
     res.json({
       success: true,
       message: 'STOP VERIFIED',
-      verificationId: auditRecord._id,
+      verificationId: result.auditRecord._id,
       vehicleId,
-      stop: targetStop.locationName,
+      stop: result.targetStop.locationName,
       arrivalTime: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
       operations: {
-        unloadedCount: unloadedDetails.length,
-        unloaded: unloadedDetails,
-        loadedCount: loadedDetails.length,
-        loaded: loadedDetails
+        unloadedCount: result.unloadedDetails.length,
+        unloaded: result.unloadedDetails,
+        loadedCount: result.loadedDetails.length,
+        loaded: result.loadedDetails
       },
       capacityAfter: {
-        capacityVolume: vehicle.capacityVolume,
-        usedVolume: capAfter.usedVolume,
-        remainingVolume: capAfter.remainingVolume,
-        capacityWeight: vehicle.capacityWeight,
-        usedWeight: capAfter.usedWeight,
-        remainingWeight: capAfter.remainingWeight,
-        volumeUtilizationPercent: capAfter.volumeUtilizationPercent,
-        weightUtilizationPercent: capAfter.weightUtilizationPercent
+        capacityVolume: result.vehicle.capacityVolume,
+        usedVolume: result.capSimulated.usedVolume,
+        remainingVolume: result.capSimulated.remainingVolume,
+        capacityWeight: result.vehicle.capacityWeight,
+        usedWeight: result.capSimulated.usedWeight,
+        remainingWeight: result.capSimulated.remainingWeight,
+        volumeUtilizationPercent: result.capSimulated.volumeUtilizationPercent,
+        weightUtilizationPercent: result.capSimulated.weightUtilizationPercent
       },
-      nextStop: nextStopName,
-      transitStatus: vehicle.transitStatus,
-      isFinalStop
+      nextStop: result.nextStopName,
+      transitStatus: result.vehicle.transitStatus,
+      isFinalStop: result.isFinalStop
     });
   } catch (error) {
-    console.error('Stop verification server error:', error);
-    res.status(500).json({ success: false, message: error.message });
+    console.error('Stop verification transaction error:', error);
+    res.status(error.status || 500).json({
+      success: false,
+      message: error.message || 'Stop verification failed.',
+      details: error.details || null
+    });
   }
 };
 
@@ -413,8 +558,7 @@ export const getVehicleTransitStatus = async (req, res) => {
       status: { $in: ['DELIVERED', 'Completed'] }
     });
 
-    // Determine LIFO Recommended Loading Sequence (rear to front)
-    // Packages going to further destinations are loaded deeper (first/front)
+    // LIFO Recommended Loading Sequence (rear to front)
     const stopsOrder = new Map(
       (route && route.stopsDetails ? route.stopsDetails : []).map((s, idx) => [s.locationName.toLowerCase(), idx])
     );
@@ -422,7 +566,6 @@ export const getVehicleTransitStatus = async (req, res) => {
     const recommendedLoadingSequence = [...loadedBookings].sort((a, b) => {
       const destIdxA = stopsOrder.get((a.toStop || '').toLowerCase()) || 0;
       const destIdxB = stopsOrder.get((b.toStop || '').toLowerCase()) || 0;
-      // Higher destination stop index loaded first (deeper in truck)
       return destIdxB - destIdxA;
     }).map((bkg, index) => ({
       positionNumber: index + 1,
@@ -480,7 +623,7 @@ export const getStopVerificationHistory = async (req, res) => {
 };
 
 /**
- * Generate secure unpredictbale QR token for a route stop
+ * Generate secure QR token for a route stop
  * @route POST /api/routes/:routeId/stops/:stopId/generate-qr
  */
 export const generateStopQrToken = async (req, res) => {

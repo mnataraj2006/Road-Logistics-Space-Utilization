@@ -130,5 +130,31 @@ bookingSchema.index({ vehicleId: 1, date: 1 });
 // Compound index on route and date for demand forecasting query optimization
 bookingSchema.index({ routeId: 1, date: 1 });
 
+/**
+ * Validates allowed status transitions for package bookings
+ * PENDING -> ALLOCATED -> WAITING_FOR_PICKUP -> IN_TRANSIT -> DELIVERED
+ */
+export const isValidBookingStatusTransition = (currentStatus, targetStatus) => {
+  if (!currentStatus || !targetStatus) return false;
+  const curr = currentStatus.toUpperCase();
+  const tgt = targetStatus.toUpperCase();
+
+  if (curr === tgt) return true; // Idempotent same-state check
+
+  const validTransitions = {
+    'PENDING': ['ALLOCATED', 'WAITING_FOR_PICKUP', 'IN_TRANSIT', 'CANCELLED'],
+    'ALLOCATED': ['WAITING_FOR_PICKUP', 'IN_TRANSIT', 'CANCELLED'],
+    'WAITING_FOR_PICKUP': ['IN_TRANSIT', 'CANCELLED'],
+    'LOADED': ['IN_TRANSIT', 'DELIVERED', 'COMPLETED', 'CANCELLED'],
+    'IN_TRANSIT': ['DELIVERED', 'COMPLETED', 'CANCELLED'],
+    'DELIVERED': ['COMPLETED'],
+    'COMPLETED': [],
+    'CANCELLED': []
+  };
+
+  const allowed = validTransitions[curr] || [];
+  return allowed.includes(tgt);
+};
+
 const Booking = mongoose.model('Booking', bookingSchema);
 export default Booking;
