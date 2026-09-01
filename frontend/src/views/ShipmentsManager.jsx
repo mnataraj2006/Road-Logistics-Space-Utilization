@@ -89,7 +89,7 @@ const ShipmentsManager = () => {
         fromStop,
         toStop,
         cargoDescription: cargoDesc,
-        invoiceNumber: `INV-SIM-${Math.floor(100000 + Math.random() * 900000)}`,
+        invoiceNumber: `INV-${Date.now().toString().slice(-6)}`,
         invoiceValue: parseFloat(invoiceVal)
       };
 

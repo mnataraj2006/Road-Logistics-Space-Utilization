@@ -28,7 +28,7 @@ __pycache__/
 .DS_Store
 *.suo
 *.ntvs*
-*.njsproj
-*.sln
 *.sw?
+scratch/
+backend/scratch/
 

@@ -5,33 +5,34 @@ const bookingSchema = new mongoose.Schema({
     type: String,
     required: true,
     unique: true,
-    trim: true
-  },
-  date: {
-    type: Date,
-    required: true
-  },
-  vehicle: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Vehicle',
-    required: false,
-    default: null
-  },
-  vehicleId: {
-    type: String,
-    required: false,
     trim: true,
-    default: 'UNASSIGNED'
+    index: true
+  },
+  shipment: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Shipment',
+    required: false
+  },
+  shipmentId: {
+    type: String,
+    trim: true,
+    index: true
+  },
+  customer: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: false
   },
   shipper: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true
+    required: false
   },
   shipperId: {
     type: String,
     required: true,
-    trim: true
+    trim: true,
+    index: true
   },
   carrier: {
     type: mongoose.Schema.Types.ObjectId,
@@ -43,7 +44,21 @@ const bookingSchema = new mongoose.Schema({
     type: String,
     required: false,
     trim: true,
-    default: 'UNASSIGNED'
+    default: 'UNASSIGNED',
+    index: true
+  },
+  vehicle: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Vehicle',
+    required: false,
+    default: null
+  },
+  vehicleId: {
+    type: String,
+    required: false,
+    trim: true,
+    default: 'UNASSIGNED',
+    index: true
   },
   route: {
     type: mongoose.Schema.Types.ObjectId,
@@ -55,23 +70,25 @@ const bookingSchema = new mongoose.Schema({
     type: String,
     required: false,
     trim: true,
-    default: 'UNASSIGNED'
+    default: 'UNASSIGNED',
+    index: true
   },
-  weight: {
-    type: Number, // in kg
-    required: true
+  date: {
+    type: Date,
+    required: true,
+    index: true
   },
-  volume: {
-    type: Number, // in m³ (occupied space)
-    required: true
+  requestedRoute: {
+    type: String,
+    default: ''
   },
-  revenue: {
-    type: Number, // in INR
-    required: true
+  requestedSegment: {
+    fromStop: { type: String, default: '' },
+    toStop: { type: String, default: '' }
   },
-  delayHours: {
-    type: Number,
-    default: 0
+  requestedCapacity: {
+    volume: { type: Number, default: 0 },
+    weight: { type: Number, default: 0 }
   },
   fromStop: {
     type: String,
@@ -82,6 +99,41 @@ const bookingSchema = new mongoose.Schema({
     type: String,
     trim: true,
     default: ''
+  },
+  weight: {
+    type: Number, // in kg
+    required: true,
+    min: 0.1
+  },
+  volume: {
+    type: Number, // in m³
+    required: true,
+    min: 0.001
+  },
+  price: {
+    type: Number,
+    default: 0
+  },
+  revenue: {
+    type: Number, // in INR
+    required: true
+  },
+  pricingRuleVersion: {
+    type: String,
+    default: 'PRICING-RULE-v2.1.0-DETERMINISTIC'
+  },
+  pricingBreakdown: {
+    type: Object,
+    default: {}
+  },
+  paymentState: {
+    type: String,
+    enum: ['UNPAID', 'ESCROW', 'RELEASED', 'REFUNDED'],
+    default: 'ESCROW'
+  },
+  delayHours: {
+    type: Number,
+    default: 0
   },
   cargoDescription: {
     type: String,
@@ -102,14 +154,16 @@ const bookingSchema = new mongoose.Schema({
     required: true,
     enum: [
       'Pending', 'PENDING',
+      'CONFIRMED',
       'ALLOCATED',
       'WAITING_FOR_PICKUP',
       'LOADED',
       'In Transit', 'IN_TRANSIT',
       'DELIVERED', 'Completed',
-      'Cancelled'
+      'Cancelled', 'CANCELLED'
     ],
-    default: 'PENDING'
+    default: 'PENDING',
+    index: true
   },
   loadedAt: {
     type: Date,
@@ -118,21 +172,19 @@ const bookingSchema = new mongoose.Schema({
   deliveredAt: {
     type: Date,
     default: null
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now
   }
+}, {
+  timestamps: true
 });
 
-// Compound index on vehicle and date for easy lookup of daily loads
+// Sync compound indexes
 bookingSchema.index({ vehicleId: 1, date: 1 });
-// Compound index on route and date for demand forecasting query optimization
 bookingSchema.index({ routeId: 1, date: 1 });
+bookingSchema.index({ shipperId: 1, status: 1 });
 
 /**
  * Validates allowed status transitions for package bookings
- * PENDING -> ALLOCATED -> WAITING_FOR_PICKUP -> IN_TRANSIT -> DELIVERED
+ * PENDING -> ALLOCATED -> WAITING_FOR_PICKUP -> IN_TRANSIT -> DELIVERED -> COMPLETED
  */
 export const isValidBookingStatusTransition = (currentStatus, targetStatus) => {
   if (!currentStatus || !targetStatus) return false;
@@ -142,9 +194,10 @@ export const isValidBookingStatusTransition = (currentStatus, targetStatus) => {
   if (curr === tgt) return true; // Idempotent same-state check
 
   const validTransitions = {
-    'PENDING': ['ALLOCATED', 'WAITING_FOR_PICKUP', 'IN_TRANSIT', 'CANCELLED'],
-    'ALLOCATED': ['WAITING_FOR_PICKUP', 'IN_TRANSIT', 'CANCELLED'],
-    'WAITING_FOR_PICKUP': ['IN_TRANSIT', 'CANCELLED'],
+    'PENDING': ['CONFIRMED', 'ALLOCATED', 'WAITING_FOR_PICKUP', 'IN_TRANSIT', 'CANCELLED'],
+    'CONFIRMED': ['ALLOCATED', 'WAITING_FOR_PICKUP', 'IN_TRANSIT', 'CANCELLED'],
+    'ALLOCATED': ['WAITING_FOR_PICKUP', 'LOADED', 'IN_TRANSIT', 'CANCELLED'],
+    'WAITING_FOR_PICKUP': ['LOADED', 'IN_TRANSIT', 'CANCELLED'],
     'LOADED': ['IN_TRANSIT', 'DELIVERED', 'COMPLETED', 'CANCELLED'],
     'IN_TRANSIT': ['DELIVERED', 'COMPLETED', 'CANCELLED'],
     'DELIVERED': ['COMPLETED'],

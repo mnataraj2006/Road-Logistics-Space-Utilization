@@ -3,9 +3,14 @@ import mongoose from 'mongoose';
 import Vehicle from '../models/Vehicle.js';
 import Route from '../models/Route.js';
 import Booking, { isValidBookingStatusTransition } from '../models/Booking.js';
+import Shipment from '../models/Shipment.js';
+import Trip from '../models/Trip.js';
+import TripStop from '../models/TripStop.js';
+import LoadOperation from '../models/LoadOperation.js';
 import Payment from '../models/Payment.js';
 import StopVerification from '../models/StopVerification.js';
 import { calculateTruckSegmentCapacity, getRemainingCapacityForTruck } from '../services/capacityService.js';
+import { executeStopLifecycleOperational, dispatchTripOperational, reoptimizeRemainingRoute } from '../services/tripLifecycleService.js';
 
 /**
  * Helper to execute code within a Mongoose transaction session.
@@ -123,14 +128,75 @@ export const dispatchTruck = async (req, res) => {
       const tripId = `TRIP-${Date.now()}`;
       const now = new Date();
 
-      // 9 & 10. Update package status
+      // Create / Update domain Trip record
+      let trip = await Trip.findOne({ tripId }).session(session);
+      if (!trip) {
+        trip = new Trip({
+          tripId,
+          vehicle: vehicle._id,
+          vehicleId: vehicle.vehicleId,
+          route: route._id,
+          routeId: route.routeId,
+          carrierId: vehicle.carrierId,
+          driverId: vehicle.assignedDriverId || '',
+          status: 'IN_TRANSIT',
+          startedAt: now,
+          actualDeparture: now,
+          currentStopIndex: 0,
+          currentStop: originStopName
+        });
+        await trip.save({ session });
+      }
+
+      // Initialize TripStops for this Trip
+      if (route.stopsDetails && route.stopsDetails.length > 0) {
+        for (const sd of route.stopsDetails) {
+          await TripStop.create([{
+            trip: trip._id,
+            tripId,
+            stopId: sd.stopId,
+            sequence: sd.sequenceNumber,
+            location: sd.locationName,
+            plannedArrival: sd.sequenceNumber === 1 ? now : (sd.plannedArrival || now),
+            actualArrival: sd.sequenceNumber === 1 ? now : null,
+            verificationStatus: sd.sequenceNumber === 1 ? 'COMPLETED' : (sd.sequenceNumber === 2 ? 'READY' : 'UPCOMING'),
+            completionTimestamp: sd.sequenceNumber === 1 ? now : null,
+            qrToken: sd.qrToken || `STPTKN-${tripId}-${sd.stopId}-${crypto.randomBytes(4).toString('hex')}`
+          }], { session });
+        }
+      }
+
+      // 9 & 10. Update package status & record LoadOperation
       for (const bkg of loadedPackages) {
         if (!isValidBookingStatusTransition(bkg.status, 'IN_TRANSIT')) {
           throw { status: 400, message: `Invalid status transition for package ${bkg.bookingId}.` };
         }
+        const prevStatus = bkg.status;
         bkg.status = 'IN_TRANSIT';
         bkg.loadedAt = now;
         await bkg.save({ session });
+
+        if (bkg.shipmentId) {
+          await Shipment.updateOne({ shipmentId: bkg.shipmentId }, { status: 'IN_TRANSIT' }, { session });
+        }
+
+        // Record initial loading operation
+        await LoadOperation.create([{
+          operationId: `LOP-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`,
+          trip: trip._id,
+          tripId,
+          stopId: route.stopsDetails[0].stopId,
+          location: originStopName,
+          shipmentId: bkg.shipmentId || bkg.bookingId,
+          bookingId: bkg.bookingId,
+          operationType: 'LOADED',
+          timestamp: now,
+          performedBy: req.user?.username || 'dispatcher',
+          previousState: prevStatus,
+          resultingState: 'IN_TRANSIT',
+          volume: bkg.volume,
+          weight: bkg.weight
+        }], { session });
       }
 
       for (const bkg of waitingPackages) {
@@ -139,6 +205,10 @@ export const dispatchTruck = async (req, res) => {
         }
         bkg.status = 'WAITING_FOR_PICKUP';
         await bkg.save({ session });
+
+        if (bkg.shipmentId) {
+          await Shipment.updateOne({ shipmentId: bkg.shipmentId }, { status: 'WAITING_FOR_PICKUP' }, { session });
+        }
       }
 
       // 11. Update truck transit status
@@ -196,287 +266,68 @@ export const dispatchTruck = async (req, res) => {
 };
 
 /**
- * Server-Side Transactional QR Stop Verification with 15-Step Validation Pipeline
+ * Server-Side Transactional
+ * Atomic Stop Verification with strict ordering, idempotency, unloads first, loads second.
  * @route POST /api/transit/verify-stop
  */
 export const verifyStop = async (req, res) => {
-  const { vehicleId, qrToken } = req.body;
+  const { vehicleId, qrToken, secureToken, stopId, tripId, verificationMethod } = req.body;
+  const idempotencyKey = req.headers['x-idempotency-key'] || req.body.idempotencyKey || '';
 
-  if (!vehicleId || !qrToken) {
+  const tokenToUse = secureToken || qrToken || '';
+
+  if (!vehicleId && !tripId) {
     return res.status(400).json({
       success: false,
-      message: 'Both vehicleId and qrToken are required for verification.'
+      message: 'Either vehicleId or tripId is required for verification.'
+    });
+  }
+  if (!tokenToUse && !stopId) {
+    return res.status(400).json({
+      success: false,
+      message: 'A secureToken, qrToken, or stopId is required for stop verification.'
     });
   }
 
   try {
     const result = await runTransaction(async (session) => {
-      // STEP 1: Find truck
-      const vehicle = await Vehicle.findOne({ vehicleId }).session(session);
-      if (!vehicle) {
-        throw { status: 404, message: `Truck '${vehicleId}' not found.` };
-      }
-
-      // STEP 2: Verify truck is active
-      if (vehicle.status !== 'Active') {
-        throw { status: 400, message: `Truck '${vehicleId}' is not active.` };
-      }
-
-      // STEP 3: Verify truck has active route/trip
-      if (!vehicle.routeLane || vehicle.routeLane === 'Inactive Lane') {
-        throw { status: 400, message: `Truck '${vehicleId}' has no route assigned.` };
-      }
-
-      if (vehicle.transitStatus === 'READY' || vehicle.transitStatus === 'Idle' || vehicle.transitStatus === 'COMPLETED') {
-        throw { status: 400, message: 'No active trip found.' };
-      }
-
-      const route = await Route.findOne({ routeId: vehicle.routeLane }).session(session);
-      if (!route || !route.stopsDetails || route.stopsDetails.length === 0) {
-        throw { status: 404, message: 'Assigned route missing stop configuration.' };
-      }
-
-      // STEP 4 & STEP 5: Find QR token & verify QR belongs to this truck's route
-      const stopIndex = route.stopsDetails.findIndex(s => s.qrToken === qrToken);
-      if (stopIndex === -1) {
-        throw {
-          status: 400,
-          message: 'Invalid QR token. QR token does not belong to this truck\'s route.'
-        };
-      }
-
-      const targetStop = route.stopsDetails[stopIndex];
-
-      // STEP 6 & STEP 7: Find expected next stop & verify scanned stop equals expected stop
-      const expectedNextIndex = vehicle.currentRouteIndex + 1;
-      if (stopIndex !== expectedNextIndex) {
-        const expectedStopName = route.stopsDetails[expectedNextIndex]
-          ? route.stopsDetails[expectedNextIndex].locationName
-          : 'Unknown';
-        throw {
-          status: 400,
-          message: `Invalid stop. Expected ${expectedStopName}. Scanned ${targetStop.locationName}.`
-        };
-      }
-
-      // STEP 8: Verify stop has not already been completed (Duplicate scan protection)
-      if (targetStop.status === 'Completed') {
-        throw { status: 400, message: `Stop '${targetStop.locationName}' has already been verified.` };
-      }
-
-      // STEP 9: Find packages assigned to this truck
-      const allAssignedBookings = await Booking.find({
+      return await executeStopLifecycleOperational({
+        tripId,
         vehicleId,
-        status: { $in: ['Pending', 'PENDING', 'ALLOCATED', 'WAITING_FOR_PICKUP', 'LOADED', 'In Transit', 'IN_TRANSIT'] }
-      }).session(session);
-
-      // STEP 10: Determine packages to unload (delivery stop == current stop)
-      const packagesToUnload = allAssignedBookings.filter(bkg => {
-        const isLoaded = ['LOADED', 'In Transit', 'IN_TRANSIT'].includes(bkg.status);
-        const matchesDelivery = bkg.toStop && bkg.toStop.toLowerCase().trim() === targetStop.locationName.toLowerCase().trim();
-        return isLoaded && matchesDelivery;
+        qrToken: tokenToUse,
+        secureToken: tokenToUse,
+        stopId,
+        verificationMethod: verificationMethod || (tokenToUse.startsWith('STP-SEC.') ? 'SECURE_QR' : 'QR'),
+        idempotencyKey,
+        performedBy: req.user?.username || 'verifier',
+        session
       });
-
-      // STEP 11: Determine packages to load (pickup stop == current stop & WAITING_FOR_PICKUP / ALLOCATED)
-      const packagesToLoadCandidate = allAssignedBookings.filter(bkg => {
-        const isWaiting = ['Pending', 'PENDING', 'ALLOCATED', 'WAITING_FOR_PICKUP'].includes(bkg.status);
-        const matchesPickup = bkg.fromStop && bkg.fromStop.toLowerCase().trim() === targetStop.locationName.toLowerCase().trim();
-        return isWaiting && matchesPickup;
-      });
-
-      // STEP 12: Calculate capacity before operations
-      const capBefore = calculateTruckSegmentCapacity(vehicle, route, allAssignedBookings);
-
-      // STEP 13 & STEP 14 & STEP 15: SIMULATE UNLOAD, LOAD, AND VALIDATE CAPACITY
-      // Remaining loaded packages = currently loaded - unloaded
-      const currentlyLoaded = allAssignedBookings.filter(bkg => ['LOADED', 'In Transit', 'IN_TRANSIT'].includes(bkg.status));
-      const unloadIds = new Set(packagesToUnload.map(b => b._id.toString()));
-      const remainingLoaded = currentlyLoaded.filter(b => !unloadIds.has(b._id.toString()));
-
-      // Downstream waiting packages (not picked up yet at this stop)
-      const downstreamWaiting = allAssignedBookings.filter(bkg => {
-        const isWaiting = ['Pending', 'PENDING', 'ALLOCATED', 'WAITING_FOR_PICKUP'].includes(bkg.status);
-        const matchesPickup = bkg.fromStop && bkg.fromStop.toLowerCase().trim() === targetStop.locationName.toLowerCase().trim();
-        return isWaiting && !matchesPickup;
-      });
-
-      // Simulated active bookings after this stop verification
-      const simulatedActiveBookings = [
-        ...remainingLoaded,
-        ...packagesToLoadCandidate,
-        ...downstreamWaiting
-      ];
-
-      // Calculate simulated capacity across remaining route segments
-      const capSimulated = calculateTruckSegmentCapacity(vehicle, route, simulatedActiveBookings);
-
-      // Inspect segment capacity for remaining route legs (from current stopIndex onwards)
-      for (let i = stopIndex; i < capSimulated.segments.length; i++) {
-        const seg = capSimulated.segments[i];
-        if (seg.usedVolume > vehicle.capacityVolume || seg.usedWeight > vehicle.capacityWeight) {
-          throw {
-            status: 400,
-            message: 'Stop operation cannot be completed because the assigned load exceeds remaining truck capacity.',
-            details: {
-              segment: `${seg.fromStop} → ${seg.toStop}`,
-              volumeUsed: seg.usedVolume,
-              volumeCapacity: vehicle.capacityVolume,
-              weightUsed: seg.usedWeight,
-              weightCapacity: vehicle.capacityWeight
-            }
-          };
-        }
-      }
-
-      // ALL VALIDATION SUCCEEDED: PERFORM DATABASE WRITES INSIDE TRANSACTION
-
-      const now = new Date();
-      const unloadedDetails = [];
-      const loadedDetails = [];
-
-      // UNLOAD PACKAGES FIRST
-      for (const bkg of packagesToUnload) {
-        if (!isValidBookingStatusTransition(bkg.status, 'DELIVERED')) {
-          throw { status: 400, message: `Invalid status transition to DELIVERED for package ${bkg.bookingId}.` };
-        }
-        bkg.status = 'DELIVERED';
-        bkg.deliveredAt = now;
-        await bkg.save({ session });
-
-        unloadedDetails.push({
-          bookingId: bkg.bookingId,
-          volume: bkg.volume,
-          weight: bkg.weight,
-          shipperId: bkg.shipperId,
-          fromStop: bkg.fromStop,
-          toStop: bkg.toStop
-        });
-
-        // Release payment escrow
-        const payment = await Payment.findOne({ bookingId: bkg.bookingId }).session(session);
-        if (payment) {
-          payment.status = 'PaidOut';
-          await payment.save({ session });
-        }
-      }
-
-      // LOAD NEW PACKAGES SECOND
-      for (const bkg of packagesToLoadCandidate) {
-        if (!isValidBookingStatusTransition(bkg.status, 'IN_TRANSIT')) {
-          throw { status: 400, message: `Invalid status transition to IN_TRANSIT for package ${bkg.bookingId}.` };
-        }
-        bkg.status = 'IN_TRANSIT';
-        bkg.loadedAt = now;
-        await bkg.save({ session });
-
-        loadedDetails.push({
-          bookingId: bkg.bookingId,
-          volume: bkg.volume,
-          weight: bkg.weight,
-          shipperId: bkg.shipperId,
-          fromStop: bkg.fromStop,
-          toStop: bkg.toStop
-        });
-      }
-
-      // Update Route Stop
-      targetStop.status = 'Completed';
-      targetStop.actualArrival = now;
-      targetStop.completedAt = now;
-
-      // Update indices
-      vehicle.currentRouteIndex = stopIndex;
-      route.currentStopIndex = stopIndex;
-
-      const isFinalStop = stopIndex === route.stopsDetails.length - 1;
-      let nextStopName = '';
-
-      if (isFinalStop) {
-        // FINAL STOP VALIDATION: Check if any undelivered packages remain
-        const undeliveredPackages = await Booking.find({
-          vehicleId,
-          status: { $in: ['Pending', 'PENDING', 'ALLOCATED', 'WAITING_FOR_PICKUP', 'LOADED', 'In Transit', 'IN_TRANSIT'] }
-        }).session(session);
-
-        if (undeliveredPackages.length > 0) {
-          throw {
-            status: 400,
-            message: `Cannot complete trip. Undelivered packages remain (${undeliveredPackages.length} package(s) undelivered).`,
-            details: { undeliveredCount: undeliveredPackages.length, undeliveredIds: undeliveredPackages.map(b => b.bookingId) }
-          };
-        }
-
-        vehicle.transitStatus = 'COMPLETED';
-        vehicle.currentStop = targetStop.locationName;
-        vehicle.activeTripId = '';
-        route.status = 'Completed';
-      } else {
-        vehicle.transitStatus = 'IN_TRANSIT';
-        vehicle.currentStop = '';
-        const nextStop = route.stopsDetails[stopIndex + 1];
-        if (nextStop) {
-          nextStop.status = 'Ready';
-          nextStopName = nextStop.locationName;
-        }
-      }
-
-      await route.save({ session });
-      await vehicle.save({ session });
-
-      // Create Audit History Record
-      const auditRecord = new StopVerification({
-        vehicleId,
-        routeId: route.routeId,
-        stopId: targetStop.stopId,
-        locationName: targetStop.locationName,
-        sequenceNumber: targetStop.sequenceNumber,
-        timestamp: now,
-        verificationMethod: 'QR',
-        packagesUnloaded: unloadedDetails,
-        packagesLoaded: loadedDetails,
-        volumeBefore: capBefore.usedVolume,
-        volumeAfter: capSimulated.usedVolume,
-        weightBefore: capBefore.usedWeight,
-        weightAfter: capSimulated.usedWeight
-      });
-      await auditRecord.save({ session });
-
-      return {
-        auditRecord,
-        vehicle,
-        targetStop,
-        unloadedDetails,
-        loadedDetails,
-        capSimulated,
-        nextStopName,
-        isFinalStop
-      };
     });
+
+    if (result.isIdempotentReplay) {
+      return res.json({
+        success: true,
+        isIdempotentReplay: true,
+        message: result.message,
+        trip: result.trip,
+        actualLoadSnapshot: result.actualLoadSnapshot
+      });
+    }
 
     res.json({
       success: true,
       message: 'STOP VERIFIED',
-      verificationId: result.auditRecord._id,
-      vehicleId,
-      stop: result.targetStop.locationName,
-      arrivalTime: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-      operations: {
-        unloadedCount: result.unloadedDetails.length,
-        unloaded: result.unloadedDetails,
-        loadedCount: result.loadedDetails.length,
-        loaded: result.loadedDetails
-      },
-      capacityAfter: {
-        capacityVolume: result.vehicle.capacityVolume,
-        usedVolume: result.capSimulated.usedVolume,
-        remainingVolume: result.capSimulated.remainingVolume,
-        capacityWeight: result.vehicle.capacityWeight,
-        usedWeight: result.capSimulated.usedWeight,
-        remainingWeight: result.capSimulated.remainingWeight,
-        volumeUtilizationPercent: result.capSimulated.volumeUtilizationPercent,
-        weightUtilizationPercent: result.capSimulated.weightUtilizationPercent
-      },
-      nextStop: result.nextStopName,
+      tripId: result.trip.tripId,
+      vehicleId: result.vehicle.vehicleId,
+      verifiedStop: result.verifiedStop,
+      arrivalTime: result.arrivalTime,
+      verificationMethod: result.verificationMethod,
+      packagesToUnload: result.packagesToUnload,
+      packagesToLoad: result.packagesToLoad,
+      capacityBefore: result.capacityBefore,
+      capacityAfter: result.capacityAfter,
+      remainingFutureRouteCapacity: result.remainingFutureRouteCapacity,
+      reoptimizationRecommended: result.reoptimizationRecommended,
       transitStatus: result.vehicle.transitStatus,
       isFinalStop: result.isFinalStop
     });
@@ -650,3 +501,26 @@ export const generateStopQrToken = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+/**
+ * Re-optimize downstream legs of an in-transit trip
+ * @route POST /api/transit/reoptimize/:tripId
+ */
+export const reoptimizeDownstreamTrip = async (req, res) => {
+  const { tripId } = req.params;
+  try {
+    const result = await reoptimizeRemainingRoute({ tripId });
+    res.json({
+      success: true,
+      message: 'Downstream re-optimization computed successfully.',
+      ...result
+    });
+  } catch (error) {
+    console.error('Downstream re-optimization error:', error);
+    res.status(error.status || 500).json({
+      success: false,
+      message: error.message || 'Re-optimization failed.'
+    });
+  }
+};
+

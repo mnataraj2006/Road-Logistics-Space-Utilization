@@ -5,7 +5,8 @@ import {
   getActiveTransits,
   getVehicleTransitStatus,
   getStopVerificationHistory,
-  generateStopQrToken
+  generateStopQrToken,
+  reoptimizeDownstreamTrip
 } from '../controllers/transitController.js';
 import { protect } from '../middleware/auth.js';
 
@@ -13,6 +14,7 @@ const router = express.Router();
 
 router.post('/dispatch/:vehicleId', protect, dispatchTruck);
 router.post('/verify-stop', protect, verifyStop);
+router.post('/reoptimize/:tripId', protect, reoptimizeDownstreamTrip);
 router.get('/active', protect, getActiveTransits);
 router.get('/:vehicleId/status', protect, getVehicleTransitStatus);
 router.get('/:vehicleId/history', protect, getStopVerificationHistory);

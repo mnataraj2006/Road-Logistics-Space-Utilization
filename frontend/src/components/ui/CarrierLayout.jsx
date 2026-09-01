@@ -2,15 +2,17 @@ import React, { useContext } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { AuthContext } from '../../context/AuthContext';
 import {
-  Truck, LayoutDashboard, Route,
+  Truck, LayoutDashboard, Route, Search, Sliders,
   Zap, Sparkles, Bell, LogOut, User, Box, Clock
 } from 'lucide-react';
 
 const NAV_ITEMS = [
-  { label: 'Control Tower',      path: '/',            icon: LayoutDashboard },
-  { label: 'Shipment Manager',   path: '/shipments',   icon: Box             },
-  { label: 'BI Control Console', path: '/console',     icon: Truck           },
-  { label: 'Package History',    path: '/history',     icon: Clock           },
+  { label: 'Control Tower',        path: '/',            icon: LayoutDashboard },
+  { label: 'Load Optimizer',       path: '/manager',     icon: Sliders         },
+  { label: 'Space Marketplace',    path: '/marketplace', icon: Search          },
+  { label: 'Shipment Manager',     path: '/shipments',   icon: Box             },
+  { label: 'BI Control Console',   path: '/console',     icon: Truck           },
+  { label: 'Package History',      path: '/history',     icon: Clock           },
 ];
 
 const CarrierLayout = ({ children }) => {

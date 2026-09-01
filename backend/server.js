@@ -10,15 +10,42 @@ import vehicleRoutes from './routes/vehicleRoutes.js';
 import routeRoutes from './routes/routeRoutes.js';
 import bookingRoutes from './routes/bookingRoutes.js';
 import transitRoutes from './routes/transitRoutes.js';
+import capacityRoutes from './routes/capacityRoutes.js';
+import tripRoutes from './routes/tripRoutes.js';
+import pricingRoutes from './routes/pricingRoutes.js';
+import auditRoutes from './routes/auditRoutes.js';
+import analyticsRoutes from './routes/analyticsRoutes.js';
+import {
+  securityHeadersAndCorrelation,
+  sanitizeInput,
+  rateLimit
+} from './middleware/security.js';
+import { notFoundHandler, globalErrorHandler } from './middleware/errorHandler.js';
 
 // Connect to MongoDB
 connectDB();
 
 const app = express();
 
-// Middlewares
-app.use(cors());
-app.use(express.json());
+// Security & Production Hardening Middlewares
+app.use(securityHeadersAndCorrelation);
+app.use(cors({
+  origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-idempotency-key', 'x-correlation-id', 'x-expected-version']
+}));
+app.use(express.json({ limit: '2mb' }));
+app.use(sanitizeInput);
+
+// Rate Limiters
+const authLimiter = rateLimit({ windowMs: 60 * 1000, max: 30, message: 'Too many authentication attempts. Please try again in 1 minute.' });
+const verifyStopLimiter = rateLimit({ windowMs: 60 * 1000, max: 60, message: 'Too many stop verification attempts.' });
+const generalApiLimiter = rateLimit({ windowMs: 60 * 1000, max: 300, message: 'Too many API requests. Please try again later.' });
+
+app.use('/api/', generalApiLimiter);
+app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/register', authLimiter);
+app.use('/api/transit/verify-stop', verifyStopLimiter);
 
 // API Routes
 app.use('/api/auth', authRoutes);
@@ -26,6 +53,11 @@ app.use('/api/vehicles', vehicleRoutes);
 app.use('/api/routes', routeRoutes);
 app.use('/api/bookings', bookingRoutes);
 app.use('/api/transit', transitRoutes);
+app.use('/api/capacity', capacityRoutes);
+app.use('/api/trips', tripRoutes);
+app.use('/api/pricing', pricingRoutes);
+app.use('/api/audit', auditRoutes);
+app.use('/api/analytics', analyticsRoutes);
 
 // Predictions Bridge (Gateway routing to Python FastAPI)
 app.post('/api/predictions/demand', async (req, res) => {
@@ -137,18 +169,17 @@ app.post('/api/predictions/train', async (req, res) => {
 
 // Root check endpoint
 app.get('/health', (req, res) => {
-  res.json({ status: 'UP', message: 'Road Logistics Space Optimization Backend is healthy.' });
-});
-
-// Global Error Handler
-app.use((err, req, res, next) => {
-  const statusCode = res.statusCode === 200 ? 500 : res.statusCode;
-  res.status(statusCode);
   res.json({
-    message: err.message,
-    stack: process.env.NODE_ENV === 'production' ? null : err.stack
+    status: 'UP',
+    service: 'Road Logistics Space Optimization Express Backend',
+    timestamp: new Date().toISOString(),
+    correlationId: req.correlationId
   });
 });
+
+// 404 & Global Standardized Error Handling
+app.use(notFoundHandler);
+app.use(globalErrorHandler);
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {

@@ -32,8 +32,8 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['shipper', 'carrier', 'admin', 'driver'],
-    default: 'shipper'
+    enum: ['customer', 'shipper', 'carrier', 'logistics_manager', 'admin', 'driver'],
+    default: 'customer'
   },
   carrierId: {
     type: String,

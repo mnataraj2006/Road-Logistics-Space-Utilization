@@ -5,7 +5,8 @@ const vehicleSchema = new mongoose.Schema({
     type: String,
     required: true,
     unique: true,
-    trim: true
+    trim: true,
+    index: true
   },
   type: {
     type: String,
@@ -17,17 +18,25 @@ const vehicleSchema = new mongoose.Schema({
   },
   capacityVolume: {
     type: Number, // in cubic meters (m³)
-    required: true
+    required: true,
+    min: 0.1
   },
   capacityWeight: {
     type: Number, // in kilograms (kg)
-    required: true
+    required: true,
+    min: 1
+  },
+  dimensions: {
+    length: { type: Number, default: 0 },
+    width: { type: Number, default: 0 },
+    height: { type: Number, default: 0 }
   },
   status: {
     type: String,
     required: true,
     enum: ['Active', 'In Maintenance', 'Out of Service'],
-    default: 'Active'
+    default: 'Active',
+    index: true
   },
   carrier: {
     type: mongoose.Schema.Types.ObjectId,
@@ -37,7 +46,8 @@ const vehicleSchema = new mongoose.Schema({
   carrierId: {
     type: String,
     required: true,
-    trim: true
+    trim: true,
+    index: true
   },
   routeLane: {
     type: String,
@@ -57,6 +67,16 @@ const vehicleSchema = new mongoose.Schema({
     type: Number,
     default: 5
   },
+  assignedDriver: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: false
+  },
+  assignedDriverId: {
+    type: String,
+    default: ''
+  },
+  // Summary fields (reflects latest Trip state)
   transitStatus: {
     type: String,
     required: true,
@@ -77,18 +97,12 @@ const vehicleSchema = new mongoose.Schema({
     trim: true,
     default: ''
   },
-  assignedDriverId: {
-    type: String,
-    default: ''
-  },
   tripStartedAt: {
     type: Date,
     default: null
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now
   }
+}, {
+  timestamps: true
 });
 
 const Vehicle = mongoose.model('Vehicle', vehicleSchema);

@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 const stopDetailsSchema = new mongoose.Schema({
   stopId: { type: String, required: true },
   sequenceNumber: { type: Number, required: true },
-  locationName: { type: String, required: true },
+  locationName: { type: String, required: true, trim: true },
   qrToken: { type: String, required: true },
   stopType: {
     type: String,
@@ -18,14 +18,15 @@ const stopDetailsSchema = new mongoose.Schema({
   plannedArrival: { type: Date },
   actualArrival: { type: Date },
   completedAt: { type: Date }
-});
+}, { _id: false });
 
 const routeSchema = new mongoose.Schema({
   routeId: {
     type: String,
     required: true,
     unique: true,
-    trim: true
+    trim: true,
+    index: true
   },
   source: {
     type: String,
@@ -39,11 +40,13 @@ const routeSchema = new mongoose.Schema({
   },
   distance: {
     type: Number, // in kilometers (km)
-    required: true
+    required: true,
+    min: 1
   },
   baseRate: {
     type: Number, // price per cubic meter (INR/m³)
-    required: true
+    required: true,
+    min: 1
   },
   stops: {
     type: [String],
@@ -53,18 +56,27 @@ const routeSchema = new mongoose.Schema({
     type: [stopDetailsSchema],
     default: []
   },
-  currentStopIndex: {
-    type: Number,
-    default: 0
+  active: {
+    type: Boolean,
+    default: true,
+    index: true
+  },
+  carrier: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: false
   },
   carrierId: {
     type: String,
-    trim: true
+    trim: true,
+    index: true
   },
-  createdAt: {
-    type: Date,
-    default: Date.now
+  currentStopIndex: {
+    type: Number,
+    default: 0
   }
+}, {
+  timestamps: true
 });
 
 const Route = mongoose.model('Route', routeSchema);

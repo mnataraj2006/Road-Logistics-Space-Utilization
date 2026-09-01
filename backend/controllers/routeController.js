@@ -70,7 +70,7 @@ export const getRoutePerformance = async (req, res) => {
     const vehicleMap = new Map(vehicles.map(v => [v.vehicleId, v]));
     const routeInfoMap = new Map(routes.map(r => [r.routeId, r]));
 
-    let matchFilter = { status: 'Completed' };
+    let matchFilter = { status: { $in: ['Completed', 'COMPLETED', 'DELIVERED'] } };
     if (req.user && req.user.role === 'shipper') {
       matchFilter.shipperId = req.user.username;
     } else if (req.user && req.user.role === 'carrier') {

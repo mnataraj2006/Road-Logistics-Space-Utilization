@@ -1,21 +1,43 @@
 import React, { useContext } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, AuthContext } from './context/AuthContext';
-import CarrierLayout  from './components/ui/CarrierLayout';
+import RoleLayout from './components/ui/RoleLayout';
 
 // Public views
-import Login  from './views/Login';
+import Login from './views/Login';
 import Signup from './views/Signup';
 import StopScan from './views/StopScan';
 
-// BI Analytics views
-import CarrierDashboard from './views/CarrierDashboard';
-import SplitViewConsole from './views/SplitViewConsole';
-import ShipmentsManager from './views/ShipmentsManager';
-import PackageHistory   from './views/PackageHistory';
+// Customer views
+import CustomerDashboard from './views/customer/CustomerDashboard';
+import SearchSpaceView from './views/customer/SearchSpaceView';
+import MyShipmentsView from './views/customer/MyShipmentsView';
+import MyBookingsView from './views/customer/MyBookingsView';
+import TrackShipmentView from './views/customer/TrackShipmentView';
+import CustomerProfileView from './views/customer/CustomerProfileView';
 
-/* ── Auth guard — always wraps in Control Tower layout ────────────────────── */
-const ProtectedRoute = ({ children, useLayout = true }) => {
+// Logistics Manager views
+import ManagerOperationsDashboard from './views/manager/ManagerOperationsDashboard';
+import ManagerShipmentsView from './views/manager/ManagerShipmentsView';
+import ManagerTripsView from './views/manager/ManagerTripsView';
+import ManagerOptimizationView from './views/manager/ManagerOptimizationView';
+import ManagerLoadPlansView from './views/manager/ManagerLoadPlansView';
+import ManagerLiveTripOpsView from './views/manager/ManagerLiveTripOpsView';
+import ManagerStopOpsView from './views/manager/ManagerStopOpsView';
+import ManagerFleetView from './views/manager/ManagerFleetView';
+import ManagerRoutesView from './views/manager/ManagerRoutesView';
+import ManagerAnalyticsView from './views/manager/ManagerAnalyticsView';
+import ManagerAuditView from './views/manager/ManagerAuditView';
+
+// Carrier views
+import CarrierFleetView from './views/carrier/CarrierFleetView';
+import CarrierTripsView from './views/carrier/CarrierTripsView';
+import CarrierVehiclesView from './views/carrier/CarrierVehiclesView';
+import CarrierTripOpsView from './views/carrier/CarrierTripOpsView';
+import CarrierLoadStatusView from './views/carrier/CarrierLoadStatusView';
+
+/* ── Auth guard wrapping in dynamic RoleLayout ───────────────────────────── */
+const ProtectedRoute = ({ children }) => {
   const { user, loading } = useContext(AuthContext);
 
   if (loading) {
@@ -28,9 +50,24 @@ const ProtectedRoute = ({ children, useLayout = true }) => {
 
   if (!user) return <Navigate to="/login" replace />;
 
-  if (!useLayout) return children;
+  return <RoleLayout>{children}</RoleLayout>;
+};
 
-  return <CarrierLayout>{children}</CarrierLayout>;
+/* ── Role-based Home Redirection ─────────────────────────────────────────── */
+const RoleHomeRedirect = () => {
+  const { user, loading } = useContext(AuthContext);
+
+  if (loading) return null;
+  if (!user) return <Navigate to="/login" replace />;
+
+  const role = user.role || 'customer';
+  if (['admin', 'logistics_manager'].includes(role)) {
+    return <Navigate to="/manager/dashboard" replace />;
+  }
+  if (role === 'carrier') {
+    return <Navigate to="/carrier/fleet" replace />;
+  }
+  return <Navigate to="/customer/dashboard" replace />;
 };
 
 function App() {
@@ -38,34 +75,48 @@ function App() {
     <AuthProvider>
       <Router future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <Routes>
-          {/* Public */}
-          <Route path="/login"  element={<Login />}  />
+          {/* Public Routes */}
+          <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
           <Route path="/stop-scan" element={<StopScan />} />
 
-          {/* Home (Executive Dashboard) */}
-          <Route path="/" element={
-            <ProtectedRoute><CarrierDashboard /></ProtectedRoute>
-          } />
+          {/* Root Role-Based Smart Redirect */}
+          <Route path="/" element={<RoleHomeRedirect />} />
 
-          {/* ── BI Control Tower Analytics routes ─────────────────── */}
-          <Route path="/console" element={
-            <ProtectedRoute><SplitViewConsole /></ProtectedRoute>
-          } />
-          <Route path="/shipments" element={
-            <ProtectedRoute><ShipmentsManager /></ProtectedRoute>
-          } />
-          <Route path="/history" element={
-            <ProtectedRoute><PackageHistory /></ProtectedRoute>
-          } />
+          {/* ── CUSTOMER / SHIPPER ROUTES ──────────────────────── */}
+          <Route path="/customer/dashboard" element={<ProtectedRoute><CustomerDashboard /></ProtectedRoute>} />
+          <Route path="/customer/search" element={<ProtectedRoute><SearchSpaceView /></ProtectedRoute>} />
+          <Route path="/customer/shipments" element={<ProtectedRoute><MyShipmentsView /></ProtectedRoute>} />
+          <Route path="/customer/bookings" element={<ProtectedRoute><MyBookingsView /></ProtectedRoute>} />
+          <Route path="/customer/track" element={<ProtectedRoute><TrackShipmentView /></ProtectedRoute>} />
+          <Route path="/customer/profile" element={<ProtectedRoute><CustomerProfileView /></ProtectedRoute>} />
 
-          {/* Redirect legacy views to unified console */}
-          <Route path="/space" element={<Navigate to="/console" replace />} />
-          <Route path="/routes" element={<Navigate to="/console" replace />} />
-          <Route path="/consolidate" element={<Navigate to="/console" replace />} />
-          <Route path="/predictions" element={<Navigate to="/console" replace />} />
+          {/* ── LOGISTICS MANAGER ROUTES ───────────────────────── */}
+          <Route path="/manager/dashboard" element={<ProtectedRoute><ManagerOperationsDashboard /></ProtectedRoute>} />
+          <Route path="/manager/shipments" element={<ProtectedRoute><ManagerShipmentsView /></ProtectedRoute>} />
+          <Route path="/manager/trips" element={<ProtectedRoute><ManagerTripsView /></ProtectedRoute>} />
+          <Route path="/manager/optimizer" element={<ProtectedRoute><ManagerOptimizationView /></ProtectedRoute>} />
+          <Route path="/manager/load-plans" element={<ProtectedRoute><ManagerLoadPlansView /></ProtectedRoute>} />
+          <Route path="/manager/live-trip" element={<ProtectedRoute><ManagerLiveTripOpsView /></ProtectedRoute>} />
+          <Route path="/manager/stop-ops" element={<ProtectedRoute><ManagerStopOpsView /></ProtectedRoute>} />
+          <Route path="/manager/fleet" element={<ProtectedRoute><ManagerFleetView /></ProtectedRoute>} />
+          <Route path="/manager/routes" element={<ProtectedRoute><ManagerRoutesView /></ProtectedRoute>} />
+          <Route path="/manager/analytics" element={<ProtectedRoute><ManagerAnalyticsView /></ProtectedRoute>} />
+          <Route path="/manager/audit" element={<ProtectedRoute><ManagerAuditView /></ProtectedRoute>} />
 
-          {/* Catch-all */}
+          {/* ── CARRIER ROUTES ─────────────────────────────────── */}
+          <Route path="/carrier/fleet" element={<ProtectedRoute><CarrierFleetView /></ProtectedRoute>} />
+          <Route path="/carrier/trips" element={<ProtectedRoute><CarrierTripsView /></ProtectedRoute>} />
+          <Route path="/carrier/vehicles" element={<ProtectedRoute><CarrierVehiclesView /></ProtectedRoute>} />
+          <Route path="/carrier/trip-ops" element={<ProtectedRoute><CarrierTripOpsView /></ProtectedRoute>} />
+          <Route path="/carrier/load-status" element={<ProtectedRoute><CarrierLoadStatusView /></ProtectedRoute>} />
+
+          {/* Backward compatibility redirects */}
+          <Route path="/marketplace" element={<Navigate to="/customer/search" replace />} />
+          <Route path="/manager" element={<Navigate to="/manager/optimizer" replace />} />
+          <Route path="/shipments" element={<Navigate to="/customer/shipments" replace />} />
+
+          {/* Catch-all fallback */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Router>

@@ -6,6 +6,9 @@ import { fileURLToPath } from 'url';
 import Route from '../models/Route.js';
 import Vehicle from '../models/Vehicle.js';
 import Booking from '../models/Booking.js';
+import Trip from '../models/Trip.js';
+import TripStop from '../models/TripStop.js';
+import LoadOperation from '../models/LoadOperation.js';
 import StopVerification from '../models/StopVerification.js';
 import { calculateTruckSegmentCapacity } from '../services/capacityService.js';
 import { dispatchTruck, verifyStop } from '../controllers/transitController.js';
@@ -29,6 +32,12 @@ const runComprehensiveTests = async () => {
     console.log('Connecting to MongoDB...', mongoUri);
     await mongoose.connect(mongoUri);
 
+    try {
+      await mongoose.connection.collection('tripstops').dropIndex('qrToken_1');
+    } catch (e) {
+      // index may not exist
+    }
+
     console.log('\n==================================================');
     console.log('TEST SCENARIO 1 — NORMAL TRIP JOURNEY');
     console.log('==================================================');
@@ -39,6 +48,9 @@ const runComprehensiveTests = async () => {
     await Route.deleteMany({ routeId });
     await Vehicle.deleteMany({ vehicleId });
     await Booking.deleteMany({ vehicleId });
+    await Trip.deleteMany({ vehicleId });
+    await TripStop.deleteMany({});
+    await LoadOperation.deleteMany({});
     await StopVerification.deleteMany({ vehicleId });
 
     const route = await Route.create({

@@ -1,8 +1,11 @@
 import Booking from '../models/Booking.js';
+import Shipment from '../models/Shipment.js';
 import Vehicle from '../models/Vehicle.js';
 import Route from '../models/Route.js';
 import User from '../models/User.js';
 import Payment from '../models/Payment.js';
+import crypto from 'crypto';
+import { calculateDeterministicPrice } from '../services/pricingService.js';
 import { calculateTruckSegmentCapacity } from '../services/capacityService.js';
 
 // @desc    Get all bookings
@@ -73,7 +76,7 @@ export const createBooking = async (req, res) => {
         const activeBookings = await Booking.find({
           vehicleId,
           date: { $gte: targetDateStart, $lte: targetDateEnd },
-          status: { $in: ['Pending', 'In Transit'] }
+          status: { $in: ['Pending', 'PENDING', 'ALLOCATED', 'WAITING_FOR_PICKUP', 'LOADED', 'In Transit', 'IN_TRANSIT'] }
         });
 
         // Determine the stops sequence for the route
@@ -141,7 +144,7 @@ export const createBooking = async (req, res) => {
             const candBookings = await Booking.find({
               vehicleId: candidate.vehicleId,
               date: { $gte: targetDateStart, $lte: targetDateEnd },
-              status: { $in: ['Pending', 'In Transit'] }
+              status: { $in: ['Pending', 'PENDING', 'ALLOCATED', 'WAITING_FOR_PICKUP', 'LOADED', 'In Transit', 'IN_TRANSIT'] }
             });
 
             const candSegVol = new Array(numSegments).fill(0);
@@ -249,10 +252,42 @@ export const createBooking = async (req, res) => {
       }
     }
 
-    const revenue = Math.round(basePrice * (Math.random() * 0.05 + 0.98));
+    // Deterministic pricing calculation
+    const pricingQuote = calculateDeterministicPrice({
+      routeDistance: route?.distance || 350,
+      volume: newVolume,
+      weight: newWeight,
+      serviceTier: 'STANDARD',
+      cargoType: 'GENERAL',
+      isUnderutilizedRoute: false
+    });
+    const revenue = pricingQuote.finalPrice;
 
+    // 1. Create backing physical Shipment
+    const shipmentId = `SHP-${bookingId}`;
+    const newShipment = new Shipment({
+      shipmentId,
+      customer: shipper,
+      shipperId,
+      cargoDescription: cargoDescription || '',
+      packageCount: 1,
+      volume: newVolume,
+      weight: newWeight,
+      pickupStop: fromStop || (route ? route.source : 'Origin'),
+      deliveryStop: toStop || (route ? route.destination : 'Destination'),
+      requestedDate: new Date(date),
+      status: 'BOOKED',
+      invoiceNumber: invoiceNumber || '',
+      invoiceValue: invoiceValue !== undefined ? Number(invoiceValue) : 0
+    });
+    const savedShipment = await newShipment.save();
+
+    // 2. Create commercial Booking
     const newBooking = new Booking({
       bookingId,
+      shipment: savedShipment._id,
+      shipmentId: savedShipment.shipmentId,
+      customer: shipper,
       date: new Date(date),
       vehicle,
       vehicleId: finalVehicleId,
@@ -265,7 +300,16 @@ export const createBooking = async (req, res) => {
       weight: newWeight,
       volume: newVolume,
       revenue,
-      status: status || 'Pending',
+      price: revenue,
+      requestedSegment: {
+        fromStop: fromStop || (route ? route.source : ''),
+        toStop: toStop || (route ? route.destination : '')
+      },
+      requestedCapacity: {
+        volume: newVolume,
+        weight: newWeight
+      },
+      status: status || 'PENDING',
       fromStop: fromStop || '',
       toStop: toStop || '',
       cargoDescription: cargoDescription || '',
@@ -275,7 +319,8 @@ export const createBooking = async (req, res) => {
 
     const savedBooking = await newBooking.save();
 
-    // Create payment transaction
+    // Create payment transaction with cryptographic ID
+    const txSuffix = crypto.randomBytes(4).toString('hex');
     const payment = new Payment({
       booking: savedBooking._id,
       bookingId: savedBooking.bookingId,
@@ -287,7 +332,7 @@ export const createBooking = async (req, res) => {
       platformFee: Math.round(revenue * 0.05),
       carrierPayout: Math.round(revenue * 0.95),
       status: savedBooking.status === 'Completed' ? 'PaidOut' : 'Escrow',
-      transactionId: 'ch_' + Math.random().toString(36).substring(2, 12),
+      transactionId: `tx_ch_${savedBooking.bookingId}_${txSuffix}`,
       createdAt: new Date(date)
     });
     await payment.save();
