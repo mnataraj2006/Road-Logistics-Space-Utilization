@@ -1,6 +1,6 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import http from 'http';
 import connectDB from './config/db.js';
 
@@ -10,9 +10,6 @@ import vehicleRoutes from './routes/vehicleRoutes.js';
 import routeRoutes from './routes/routeRoutes.js';
 import bookingRoutes from './routes/bookingRoutes.js';
 import transitRoutes from './routes/transitRoutes.js';
-
-// Load Env variables
-dotenv.config();
 
 // Connect to MongoDB
 connectDB();

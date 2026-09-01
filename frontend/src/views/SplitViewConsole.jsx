@@ -1227,6 +1227,9 @@ const SplitViewConsole = () => {
               <button type="submit" className="w-full py-3 bg-[#16a34a] hover:bg-[#15803d] text-white font-black rounded-xl text-[12px] shadow-md border-none cursor-pointer">Register Lane</button>
             </form>
           </div>
+        </div>
+      )}
+
       {/* ── MODAL: ROUTE QR CODES ───────────────────────────────── */}
       {showQrModal && (
         <RouteQrModal

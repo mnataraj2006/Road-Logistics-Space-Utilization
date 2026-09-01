@@ -29,7 +29,11 @@ api.interceptors.request.use(
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response && error.response.status === 401) {
+    const isAuthRoute = error.config?.url?.includes('/auth/login') ||
+                        error.config?.url?.includes('/auth/google') ||
+                        error.config?.url?.includes('/auth/register');
+
+    if (error.response && error.response.status === 401 && !isAuthRoute) {
       console.warn('Unauthorized request. Clearing local storage session.');
       localStorage.removeItem('userInfo');
       window.location.href = '/login';
