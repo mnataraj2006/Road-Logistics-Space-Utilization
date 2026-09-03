@@ -70,7 +70,7 @@ const runDynamicReoptimizationTestSuite = async () => {
       username: shipperUsername,
       email: 'shipper@reopt.ai',
       password: 'password123',
-      role: 'shipper',
+      role: 'customer',
       name: 'Dynamic Reopt Shipper'
     });
 

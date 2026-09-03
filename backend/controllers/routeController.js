@@ -28,8 +28,8 @@ const calculateTripCost = (vehicleType, distance) => {
 export const getRoutes = async (req, res) => {
   try {
     let filter = {};
-    if (req.user && req.user.role === 'carrier') {
-      filter.carrierId = req.user.username;
+    if (req.user && req.user.role === 'logistics_manager' && req.user.carrierId) {
+      filter.carrierId = req.user.carrierId;
     }
     const routes = await Route.find(filter);
     res.json(routes);
@@ -60,9 +60,9 @@ export const getRoutePerformance = async (req, res) => {
   try {
     let vehicleFilter = {};
     let routeFilter = {};
-    if (req.user && req.user.role === 'carrier') {
-      vehicleFilter.carrierId = req.user.username;
-      routeFilter.carrierId = req.user.username;
+    if (req.user && req.user.role === 'logistics_manager' && req.user.carrierId) {
+      vehicleFilter.carrierId = req.user.carrierId;
+      routeFilter.carrierId = req.user.carrierId;
     }
     const vehicles = await Vehicle.find(vehicleFilter);
     const routes = await Route.find(routeFilter);
@@ -71,10 +71,10 @@ export const getRoutePerformance = async (req, res) => {
     const routeInfoMap = new Map(routes.map(r => [r.routeId, r]));
 
     let matchFilter = { status: { $in: ['Completed', 'COMPLETED', 'DELIVERED'] } };
-    if (req.user && req.user.role === 'shipper') {
+    if (req.user && (req.user.role === 'customer' || req.user.role === 'shipper')) {
       matchFilter.shipperId = req.user.username;
-    } else if (req.user && req.user.role === 'carrier') {
-      matchFilter.carrierId = req.user.username;
+    } else if (req.user && req.user.role === 'logistics_manager' && req.user.carrierId) {
+      matchFilter.carrierId = req.user.carrierId;
     }
 
     // Identify unique trips on each route to calculate operating costs
@@ -102,91 +102,54 @@ export const getRoutePerformance = async (req, res) => {
       }
     });
 
-    // Aggregate bookings by routeId
-    const performance = await Booking.aggregate([
+    // Aggregate completed bookings grouped by route
+    const analytics = await Booking.aggregate([
       { $match: matchFilter },
       {
         $group: {
           _id: '$routeId',
-          totalBookings: { $sum: 1 },
-          totalVolume: { $sum: '$volume' },
-          totalWeight: { $sum: '$weight' },
-          totalRevenue: { $sum: '$revenue' }
+          totalRevenue: { $sum: '$price' },
+          totalCompletedBookings: { $sum: 1 },
+          totalVolumeUtilized: { $sum: '$volume' },
+          totalWeightUtilized: { $sum: '$weight' },
         }
-      },
-      { $sort: { totalRevenue: -1 } }
+      }
     ]);
 
-    const analytics = performance.map(perf => {
-      const routeId = perf._id;
-      const details = routeInfoMap.get(routeId);
-      const totalCost = Math.round(routeCostMap.get(routeId) || 0);
-      const totalProfit = perf.totalRevenue - totalCost;
-      const profitMargin = perf.totalRevenue > 0 ? parseFloat(((totalProfit / perf.totalRevenue) * 100).toFixed(1)) : 0;
+    // Enhance analytics with operating costs and margin
+    const enhancedAnalytics = analytics.map(a => {
+      const operatingCost = routeCostMap.get(a._id) || 0;
+      const margin = a.totalRevenue - operatingCost;
+      const marginPercent = a.totalRevenue > 0 ? ((margin / a.totalRevenue) * 100).toFixed(1) : 0;
+      const routeObj = routeInfoMap.get(a._id);
 
       return {
-        routeId,
-        source: details ? details.source : 'Unknown',
-        destination: details ? details.destination : 'Unknown',
-        distance: details ? details.distance : 0,
-        baseRate: details ? details.baseRate : 0,
-        stops: details ? details.stops : [],
-        totalBookings: perf.totalBookings,
-        totalVolume: parseFloat(perf.totalVolume.toFixed(1)),
-        totalWeight: perf.totalWeight,
-        totalRevenue: perf.totalRevenue,
-        totalCost,
-        totalProfit,
-        profitMargin,
-        avgRevenuePerBooking: perf.totalBookings > 0 ? parseFloat((perf.totalRevenue / perf.totalBookings).toFixed(2)) : 0,
-        avgProfitPerBooking: perf.totalBookings > 0 ? parseFloat((totalProfit / perf.totalBookings).toFixed(2)) : 0,
-        avgLoadVolume: perf.totalBookings > 0 ? parseFloat((perf.totalVolume / perf.totalBookings).toFixed(1)) : 0
+        ...a,
+        source: routeObj ? routeObj.source : 'Unknown',
+        destination: routeObj ? routeObj.destination : 'Unknown',
+        operatingCost,
+        margin,
+        marginPercent: Number(marginPercent)
       };
     });
 
-    // Include routes with 0 bookings as well
-    const activeRouteIds = new Set(performance.map(p => p._id));
-    routes.forEach(route => {
-      if (!activeRouteIds.has(route.routeId)) {
-        analytics.push({
-          routeId: route.routeId,
-          source: route.source,
-          destination: route.destination,
-          distance: route.distance,
-          baseRate: route.baseRate,
-          stops: route.stops || [],
-          totalBookings: 0,
-          totalVolume: 0,
-          totalWeight: 0,
-          totalRevenue: 0,
-          totalCost: 0,
-          totalProfit: 0,
-          profitMargin: 0,
-          avgRevenuePerBooking: 0,
-          avgProfitPerBooking: 0,
-          avgLoadVolume: 0
-        });
-      }
-    });
-
-    res.json(analytics);
+    res.json(enhancedAnalytics);
   } catch (error) {
-    console.error('Route performance analysis error:', error);
     res.status(500).json({ message: error.message });
   }
 };
 
-// @desc    Create a new route
+// @desc    Create a new route lane
 // @route   POST /api/routes
-// @access  Private
+// @access  Private (Logistics Manager)
 export const createRoute = async (req, res) => {
   const { routeId, source, destination, distance, baseRate, stops } = req.body;
 
-  if (!req.user || req.user.role !== 'carrier') {
-    return res.status(403).json({ message: 'Access denied: Only carriers can manage route lanes.' });
+  if (!req.user || !['logistics_manager', 'admin'].includes(req.user.role)) {
+    return res.status(403).json({ message: 'Access denied: Only logistics managers can manage route lanes.' });
   }
 
-  const carrierId = req.user.username;
+  const carrierId = req.user.carrierId || req.user.username;
 
   try {
     const exists = await Route.findOne({ routeId });
@@ -229,12 +192,12 @@ export const createRoute = async (req, res) => {
 
 // @desc    Update a route
 // @route   PUT /api/routes/:id
-// @access  Private
+// @access  Private (Logistics Manager)
 export const updateRoute = async (req, res) => {
-  const { source, destination, distance, baseRate, stops } = req.body;
+  const { routeId: newRouteId, source, destination, distance, baseRate, stops } = req.body;
 
-  if (!req.user || req.user.role !== 'carrier') {
-    return res.status(403).json({ message: 'Access denied: Only carriers can manage route lanes.' });
+  if (!req.user || !['logistics_manager', 'admin'].includes(req.user.role)) {
+    return res.status(403).json({ message: 'Access denied: Only logistics managers can manage route lanes.' });
   }
 
   try {
@@ -243,15 +206,46 @@ export const updateRoute = async (req, res) => {
       return res.status(404).json({ message: 'Route not found' });
     }
 
-    if (route.carrierId !== req.user.username) {
-      return res.status(403).json({ message: 'Access denied: You do not own this route lane.' });
+    const oldRouteId = route.routeId;
+
+    if (newRouteId && newRouteId.trim().toUpperCase() !== oldRouteId) {
+      const cleanNewId = newRouteId.trim().toUpperCase();
+      const duplicate = await Route.findOne({ routeId: cleanNewId });
+      if (duplicate) {
+        return res.status(400).json({ message: `A route corridor with identifier '${cleanNewId}' already exists.` });
+      }
+      route.routeId = cleanNewId;
+
+      // Update references in Vehicle and Trip models if needed
+      await Vehicle.updateMany({ routeLane: oldRouteId }, { routeLane: cleanNewId });
     }
 
-    if (source !== undefined) route.source = source;
-    if (destination !== undefined) route.destination = destination;
+    if (source !== undefined) route.source = source.trim();
+    if (destination !== undefined) route.destination = destination.trim();
     if (distance !== undefined) route.distance = Number(distance);
     if (baseRate !== undefined) route.baseRate = Number(baseRate);
-    if (stops !== undefined) route.stops = stops;
+    if (stops !== undefined) {
+      const rawList = Array.isArray(stops) ? stops : stops.split(',').map(s => s.trim()).filter(Boolean);
+      // Ensure origin and destination are not duplicated inside intermediate stops
+      route.stops = rawList.filter(
+        s => s.toLowerCase() !== route.source.toLowerCase() && s.toLowerCase() !== route.destination.toLowerCase()
+      );
+    }
+
+    // Recompute sequential stopsDetails
+    const allStops = [route.source, ...(route.stops || []), route.destination];
+    route.stopsDetails = allStops.map((stopName, idx) => {
+      const isOrigin = idx === 0;
+      const isDest = idx === allStops.length - 1;
+      return {
+        stopId: `STP-${route.routeId}-${idx + 1}`,
+        sequenceNumber: idx + 1,
+        locationName: stopName,
+        qrToken: `STPTKN-${crypto.randomBytes(8).toString('hex')}`,
+        stopType: isOrigin ? 'ORIGIN' : isDest ? 'FINAL_DESTINATION' : 'INTERMEDIATE',
+        status: isOrigin ? 'Ready' : 'Upcoming'
+      };
+    });
 
     const updatedRoute = await route.save();
     res.json(updatedRoute);
@@ -262,20 +256,16 @@ export const updateRoute = async (req, res) => {
 
 // @desc    Delete a route
 // @route   DELETE /api/routes/:id
-// @access  Private
+// @access  Private (Logistics Manager)
 export const deleteRoute = async (req, res) => {
-  if (!req.user || req.user.role !== 'carrier') {
-    return res.status(403).json({ message: 'Access denied: Only carriers can manage route lanes.' });
+  if (!req.user || !['logistics_manager', 'admin'].includes(req.user.role)) {
+    return res.status(403).json({ message: 'Access denied: Only logistics managers can manage route lanes.' });
   }
 
   try {
     const route = await Route.findOne({ routeId: req.params.id });
     if (!route) {
       return res.status(404).json({ message: 'Route not found' });
-    }
-
-    if (route.carrierId !== req.user.username) {
-      return res.status(403).json({ message: 'Access denied: You do not own this route lane.' });
     }
 
     await Route.deleteOne({ routeId: req.params.id });

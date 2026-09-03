@@ -63,7 +63,7 @@ const runConcurrencyTestSuite = async () => {
       username: shipper1,
       email: 's1@concur.ai',
       password: 'password123',
-      role: 'shipper',
+      role: 'customer',
       name: 'Shipper One'
     });
 
@@ -71,7 +71,7 @@ const runConcurrencyTestSuite = async () => {
       username: shipper2,
       email: 's2@concur.ai',
       password: 'password123',
-      role: 'shipper',
+      role: 'customer',
       name: 'Shipper Two'
     });
 

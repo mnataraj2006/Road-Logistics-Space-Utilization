@@ -217,13 +217,21 @@ export class OptimizationSolver {
     }
 
     let improved = currentSolution;
+    const maxUnassignedTrials = Math.min(5, improved.unassigned.length);
+    const maxAssignedTrials = Math.min(10, improved.assignments.length);
 
-    for (let uIdx = 0; uIdx < improved.unassigned.length; uIdx++) {
-      const candidateToInsert = this.candidates.find(c => c.shipmentId === improved.unassigned[uIdx].shipmentId);
+    for (let uIdx = 0; uIdx < maxUnassignedTrials; uIdx++) {
+      const uItem = improved.unassigned[uIdx];
+      const unassignedId = uItem?.shipmentId || uItem?.item?.shipmentId || uItem?.bookingId;
+      if (!unassignedId) continue;
+
+      const candidateToInsert = this.candidates.find(c => c.shipmentId === unassignedId);
       if (!candidateToInsert) continue;
 
-      for (let aIdx = 0; aIdx < improved.assignments.length; aIdx++) {
+      for (let aIdx = 0; aIdx < maxAssignedTrials; aIdx++) {
         const itemToRemove = improved.assignments[aIdx];
+        if (!itemToRemove) continue;
+
         // Only consider swap if candidate has equal or higher priority or higher volume
         if (candidateToInsert.priorityWeight < itemToRemove.priorityWeight && candidateToInsert.volume < itemToRemove.volume) {
           continue;

@@ -80,7 +80,7 @@ const runManagerWorkflowTestSuite = async () => {
       username: shipperUsername,
       email: 'shipper@cargolytics.ai',
       password: 'password123',
-      role: 'shipper',
+      role: 'customer',
       name: 'Test Shipper'
     });
 

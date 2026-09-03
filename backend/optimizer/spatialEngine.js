@@ -1,6 +1,6 @@
 import { ORIENTATIONS } from './constants.js';
 
-const EPSILON = 0.001; // 1mm tolerance for floating point rounding
+const EPSILON = 1e-7; // Exact 0.1 micrometer precision for boundary & collision detection
 const norm = (s) => (s ? String(s).trim().toLowerCase() : '');
 
 /**
@@ -21,14 +21,21 @@ export class SpatialEngine {
    * @param {number} truckDimensions.height - interiorHeight in meters
    */
   constructor(truckDimensions = {}, capacityVolume = 0) {
-    let len = Number(truckDimensions.length || truckDimensions.interiorLength || 13.6);
-    let wid = Number(truckDimensions.width || truckDimensions.interiorWidth || 2.45);
-    let hgt = Number(truckDimensions.height || truckDimensions.interiorHeight || 3.0);
+    let len = Number(truckDimensions.length || truckDimensions.interiorLength || 0);
+    let wid = Number(truckDimensions.width || truckDimensions.interiorWidth || 0);
+    let hgt = Number(truckDimensions.height || truckDimensions.interiorHeight || 0);
 
     const capVol = Number(capacityVolume || truckDimensions.capacityVolume || 0);
-    if (capVol > 0 && (len * wid * hgt) < capVol && wid > 0 && hgt > 0) {
-      len = parseFloat((capVol / (wid * hgt)).toFixed(2));
+    if (capVol > 0 && (len <= 0 || wid <= 0 || hgt <= 0)) {
+      if (wid <= 0) wid = 2.45;
+      if (hgt <= 0) hgt = 2.8;
+      len = parseFloat((capVol / (wid * hgt)).toFixed(3));
     }
+
+    // Standard authoritative defaults if still missing
+    if (len <= 0) len = 13.6;
+    if (wid <= 0) wid = 2.45;
+    if (hgt <= 0) hgt = 2.8;
 
     this.interiorLength = len;
     this.interiorWidth = wid;
@@ -259,23 +266,33 @@ export class SpatialEngine {
     }
 
     // Generate Candidate 3D Anchor Points (Extreme Points on Floor & Box Tops)
-    const anchorPoints = [{ x: 0, y: 0, z: 0 }];
+    const anchorPointsMap = new Map();
+    anchorPointsMap.set('0.000_0.000_0.000', { x: 0, y: 0, z: 0 });
 
     for (const pb of this.placedBoxes) {
-      // Only anchor from concurrent boxes
       if (SpatialEngine.isSegmentConcurrent(shipment.segmentRange, pb.segmentRange)) {
         // Point next to box in X
-        anchorPoints.push({ x: pb.position.x + pb.dims.dx, y: pb.position.y, z: pb.position.z });
+        const ptX = { x: pb.position.x + pb.dims.dx, y: pb.position.y, z: pb.position.z };
+        if (ptX.x <= this.interiorLength) {
+          anchorPointsMap.set(`${ptX.x.toFixed(3)}_${ptX.y.toFixed(3)}_${ptX.z.toFixed(3)}`, ptX);
+        }
         // Point next to box in Y
-        anchorPoints.push({ x: pb.position.x, y: pb.position.y + pb.dims.dy, z: pb.position.z });
+        const ptY = { x: pb.position.x, y: pb.position.y + pb.dims.dy, z: pb.position.z };
+        if (ptY.y <= this.interiorWidth) {
+          anchorPointsMap.set(`${ptY.x.toFixed(3)}_${ptY.y.toFixed(3)}_${ptY.z.toFixed(3)}`, ptY);
+        }
         // Point on top of box in Z (if stackable)
         if (pb.stackable !== false && pb.fragile !== true) {
-          anchorPoints.push({ x: pb.position.x, y: pb.position.y, z: pb.position.z + pb.dims.dz });
+          const ptZ = { x: pb.position.x, y: pb.position.y, z: pb.position.z + pb.dims.dz };
+          if (ptZ.z <= this.interiorHeight) {
+            anchorPointsMap.set(`${ptZ.x.toFixed(3)}_${ptZ.y.toFixed(3)}_${ptZ.z.toFixed(3)}`, ptZ);
+          }
         }
       }
     }
 
-    // Sort anchor points (prefer back of cabin X=0, floor Z=0, left Y=0)
+    const anchorPoints = Array.from(anchorPointsMap.values());
+    // Sort anchor points (prefer front of truck X=0, floor Z=0, left Y=0)
     anchorPoints.sort((a, b) => (a.x - b.x) || (a.z - b.z) || (a.y - b.y));
 
     let bestCandidate = null;
@@ -283,6 +300,10 @@ export class SpatialEngine {
 
     for (const ori of orientations) {
       for (const pt of anchorPoints) {
+        if (pt.x + ori.dx > this.interiorLength + EPSILON) continue;
+        if (pt.y + ori.dy > this.interiorWidth + EPSILON) continue;
+        if (pt.z + ori.dz > this.interiorHeight + EPSILON) continue;
+
         const candidateBox = {
           x: pt.x,
           y: pt.y,

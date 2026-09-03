@@ -34,18 +34,32 @@ const vehicleSchema = new mongoose.Schema({
   status: {
     type: String,
     required: true,
-    enum: ['Active', 'In Maintenance', 'Out of Service'],
-    default: 'Active',
+    enum: [
+      'AVAILABLE', 'ASSIGNED', 'IN_TRANSIT', 'MAINTENANCE', 'INACTIVE',
+      'Active', 'In Maintenance', 'Out of Service'
+    ],
+    default: 'AVAILABLE',
     index: true
+  },
+  organizationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'LogisticsCompany',
+    required: false,
+    index: true
+  },
+  logisticsCompanyName: {
+    type: String,
+    trim: true,
+    default: ''
   },
   carrier: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true
+    required: false
   },
   carrierId: {
     type: String,
-    required: true,
+    required: false,
     trim: true,
     index: true
   },
@@ -76,12 +90,12 @@ const vehicleSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
-  // Summary fields (reflects latest Trip state)
+  // Operational transit tracking fields
   transitStatus: {
     type: String,
     required: true,
-    enum: ['READY', 'DISPATCHED', 'IN_TRANSIT', 'AT_STOP', 'COMPLETED', 'Idle'],
-    default: 'READY'
+    enum: ['AVAILABLE', 'ASSIGNED', 'DISPATCHED', 'IN_TRANSIT', 'AT_STOP', 'COMPLETED', 'MAINTENANCE', 'INACTIVE', 'READY', 'Idle'],
+    default: 'AVAILABLE'
   },
   currentStop: {
     type: String,
@@ -95,7 +109,12 @@ const vehicleSchema = new mongoose.Schema({
   activeTripId: {
     type: String,
     trim: true,
-    default: ''
+    default: null
+  },
+  currentTripId: {
+    type: String,
+    trim: true,
+    default: null
   },
   tripStartedAt: {
     type: Date,

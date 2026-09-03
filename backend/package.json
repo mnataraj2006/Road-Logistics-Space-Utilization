@@ -7,6 +7,10 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
+    "db:clean": "node scripts/cleanDatabase.js",
+    "db:seed": "node scripts/seed.js",
+    "create:manager": "node scripts/createManager.js",
+    "migrate:carrier-role": "node scripts/migrateCarrierRole.js",
     "test": "node scripts/run_all_tests.js",
     "test:optimizer": "node scripts/test_optimizer_fixtures.js",
     "test:pricing": "node scripts/test_deterministic_pricing.js",

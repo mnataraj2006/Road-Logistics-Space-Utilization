@@ -68,7 +68,7 @@ const runSecureStopVerificationTestSuite = async () => {
       username: shipperUsername,
       email: 'shipper@security.ai',
       password: 'password123',
-      role: 'shipper',
+      role: 'customer',
       name: 'Security Test Shipper'
     });
 

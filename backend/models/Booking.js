@@ -47,6 +47,17 @@ const bookingSchema = new mongoose.Schema({
     default: 'UNASSIGNED',
     index: true
   },
+  organizationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'LogisticsCompany',
+    required: false,
+    index: true
+  },
+  logisticsCompanyName: {
+    type: String,
+    trim: true,
+    default: ''
+  },
   vehicle: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Vehicle',
@@ -149,6 +160,49 @@ const bookingSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  fragile: {
+    type: Boolean,
+    default: false
+  },
+  stackable: {
+    type: Boolean,
+    default: true
+  },
+  packageCount: {
+    type: Number,
+    default: 1,
+    min: 1
+  },
+  length: {
+    type: Number,
+    default: 0
+  },
+  width: {
+    type: Number,
+    default: 0
+  },
+  height: {
+    type: Number,
+    default: 0
+  },
+  maxStackWeight: {
+    type: Number,
+    default: 1000
+  },
+  allowRotation: {
+    type: Boolean,
+    default: true
+  },
+  cargoCategory: {
+    type: String,
+    enum: ['GENERAL', 'ELECTRONICS', 'PERISHABLE', 'HAZMAT', 'PHARMACEUTICAL', 'FRAGILE_GLASS', 'AUTOMOTIVE', 'TEXTILE'],
+    default: 'GENERAL'
+  },
+  priority: {
+    type: String,
+    enum: ['STANDARD', 'EXPRESS', 'URGENT'],
+    default: 'STANDARD'
+  },
   status: {
     type: String,
     required: true,
@@ -156,6 +210,7 @@ const bookingSchema = new mongoose.Schema({
       'Pending', 'PENDING',
       'CONFIRMED',
       'ALLOCATED',
+      'LOCKED',
       'WAITING_FOR_PICKUP',
       'LOADED',
       'In Transit', 'IN_TRANSIT',
@@ -164,6 +219,52 @@ const bookingSchema = new mongoose.Schema({
     ],
     default: 'PENDING',
     index: true
+  },
+  allocationStatus: {
+    type: String,
+    enum: [
+      'AVAILABLE_FOR_OPTIMIZATION',
+      'SELECTED_FOR_OPTIMIZATION',
+      'OPTIMIZED',
+      'ALLOCATED',
+      'LOCKED',
+      'LOADED',
+      'DELIVERED',
+      'CANCELLED'
+    ],
+    default: 'AVAILABLE_FOR_OPTIMIZATION',
+    index: true
+  },
+  isLocked: {
+    type: Boolean,
+    default: false,
+    index: true
+  },
+  lockedAt: {
+    type: Date,
+    default: null
+  },
+  allocatedTripId: {
+    type: String,
+    trim: true,
+    default: null,
+    index: true
+  },
+  allocatedLoadPlanId: {
+    type: String,
+    trim: true,
+    default: null,
+    index: true
+  },
+  allocatedVehicleId: {
+    type: String,
+    trim: true,
+    default: null,
+    index: true
+  },
+  allocatedAt: {
+    type: Date,
+    default: null
   },
   loadedAt: {
     type: Date,
@@ -181,6 +282,7 @@ const bookingSchema = new mongoose.Schema({
 bookingSchema.index({ vehicleId: 1, date: 1 });
 bookingSchema.index({ routeId: 1, date: 1 });
 bookingSchema.index({ shipperId: 1, status: 1 });
+bookingSchema.index({ allocationStatus: 1, isLocked: 1, allocatedTripId: 1 });
 
 /**
  * Validates allowed status transitions for package bookings

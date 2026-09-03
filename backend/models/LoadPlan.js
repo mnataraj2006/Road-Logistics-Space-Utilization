@@ -42,6 +42,17 @@ const loadPlanSchema = new mongoose.Schema({
     required: true,
     index: true
   },
+  organizationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'LogisticsCompany',
+    required: false,
+    index: true
+  },
+  logisticsCompanyName: {
+    type: String,
+    trim: true,
+    default: ''
+  },
   vehicleId: {
     type: String,
     required: true,
@@ -125,7 +136,7 @@ const loadPlanSchema = new mongoose.Schema({
   status: {
     type: String,
     required: true,
-    enum: ['DRAFT', 'GENERATED', 'UNDER_REVIEW', 'APPROVED', 'ACTIVE', 'SUPERSEDED', 'COMPLETED', 'CANCELLED', 'REJECTED'],
+    enum: ['DRAFT', 'GENERATED', 'UNDER_REVIEW', 'APPROVED', 'LOCKED', 'ACTIVE', 'SUPERSEDED', 'COMPLETED', 'CANCELLED', 'REJECTED'],
     default: 'GENERATED',
     index: true
   },
@@ -143,6 +154,10 @@ const loadPlanSchema = new mongoose.Schema({
     default: ''
   },
   approvedAt: {
+    type: Date,
+    default: null
+  },
+  lockedAt: {
     type: Date,
     default: null
   },

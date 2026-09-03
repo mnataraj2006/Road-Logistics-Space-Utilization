@@ -223,9 +223,156 @@ const runProductionHardeningTestSuite = async () => {
     process.env.NODE_ENV = 'development';
     console.log('✅ TEST 8 PASSED: Production error response sanitized. Internal stack traces suppressed.');
 
+    // ── TEST 9: REGISTRATION PRIVILEGE ESCALATION DEFENSES ─────────
+    console.log('\n[TEST 9] Testing Registration Privilege Escalation Defenses...');
+    const { registerUser, updateUserProfile } = await import('../controllers/authController.js');
+
+    // Attempting to register as 'carrier'
+    const { req: req9a, res: res9a } = createMockReqRes({
+      body: { username: 'hacker_carrier', email: 'hacker1@test.com', password: 'password123', role: 'carrier' }
+    });
+    await registerUser(req9a, res9a);
+    if (res9a.statusCode !== 400 || res9a.body.error !== 'PRIVILEGED_REGISTRATION_REJECTED') {
+      throw new Error('Test 9 Failed: Public registration permitted role=carrier!');
+    }
+
+    // Attempting to register as 'logistics_manager'
+    const { req: req9b, res: res9b } = createMockReqRes({
+      body: { username: 'hacker_mgr', email: 'hacker2@test.com', password: 'password123', role: 'logistics_manager' }
+    });
+    await registerUser(req9b, res9b);
+    if (res9b.statusCode !== 400 || res9b.body.error !== 'PRIVILEGED_REGISTRATION_REJECTED') {
+      throw new Error('Test 9 Failed: Public registration permitted role=logistics_manager!');
+    }
+
+    // Attempting to self-elevate role via profile update
+    const dummyUser = await User.create({
+      username: `test_customer_${Date.now()}`,
+      email: `test_cust_${Date.now()}@domain.com`,
+      password: 'hashedpassword',
+      role: 'customer'
+    });
+    const { req: req9c, res: res9c } = createMockReqRes({
+      user: dummyUser,
+      body: { role: 'logistics_manager' }
+    });
+    await updateUserProfile(req9c, res9c);
+    if (res9c.statusCode !== 403 || res9c.body.error !== 'PRIVILEGE_ESCALATION_FORBIDDEN') {
+      throw new Error('Test 9 Failed: Customer was able to self-elevate to logistics_manager via profile update!');
+    }
+    await User.deleteOne({ _id: dummyUser._id });
+    console.log('✅ TEST 9 PASSED: Registration & profile privilege escalation strictly rejected (400 / 403).');
+
+    // ── TEST 10: SESSION ROLE ISOLATION & JWT ENCAPSULATION ───────
+    console.log('\n[TEST 10] Testing Session Role Isolation...');
+    const customerUser = await User.create({
+      username: `customer_sess_${Date.now()}`,
+      email: `cust_${Date.now()}@domain.com`,
+      password: 'hashedpassword',
+      role: 'customer'
+    });
+    const managerUser = await User.create({
+      username: `mgr_sess_${Date.now()}`,
+      email: `mgr_${Date.now()}@domain.com`,
+      password: 'hashedpassword',
+      role: 'logistics_manager'
+    });
+
+    const custToken = jwt.sign({ id: customerUser._id }, secret, { expiresIn: '1h' });
+    const mgrToken = jwt.sign({ id: managerUser._id }, secret, { expiresIn: '1h' });
+
+    // 1. Authenticate customer
+    const { req: req10a, res: res10a } = createMockReqRes({ headers: { authorization: `Bearer ${custToken}` } });
+    await protect(req10a, res10a, () => {});
+    if (req10a.user.role !== 'customer') {
+      throw new Error('Test 10 Failed: Customer token resolved to incorrect role');
+    }
+
+    // 2. Authenticate manager
+    const { req: req10b, res: res10b } = createMockReqRes({ headers: { authorization: `Bearer ${mgrToken}` } });
+    await protect(req10b, res10b, () => {});
+    if (req10b.user.role !== 'logistics_manager') {
+      throw new Error('Test 10 Failed: Manager token resolved to incorrect role');
+    }
+
+    // 3. Ensure customer token cannot execute manager operations
+    const { res: res10c } = createMockReqRes({ user: req10a.user });
+    managerOnlyMiddleware(req10a, res10c, () => {});
+    if (res10c.statusCode !== 403) {
+      throw new Error('Test 10 Failed: Customer session leaked into Manager RBAC scope!');
+    }
+
+    await User.deleteMany({ _id: { $in: [customerUser._id, managerUser._id] } });
+    console.log('✅ TEST 10 PASSED: Session tokens strictly isolate Customer and Logistics Manager permissions.');
+
+    // ── TEST 11: GOOGLE AUTHENTICATION & ACCOUNT LINKING ─────────
+    console.log('\n[TEST 11] Testing Google Authentication & Safe Account Linking...');
+    const { googleLogin } = await import('../controllers/authController.js');
+
+    // 1. Missing Google ID Token rejected
+    const { req: req11a, res: res11a } = createMockReqRes({ body: {} });
+    await googleLogin(req11a, res11a);
+    if (res11a.statusCode !== 400) {
+      throw new Error('Test 11 Failed: Missing Google ID Token was not rejected with 400');
+    }
+
+    // 2. Mock valid Google ID token for NEW user -> created as customer
+    const mockGoogleClientId = process.env.GOOGLE_CLIENT_ID || '201127500798-tooljnnriapt38tulpr9opivdbr460st.apps.googleusercontent.com';
+    const mockGoogleIdNew = `g_sub_${Date.now()}`;
+    const mockGoogleEmailNew = `google_user_${Date.now()}@gmail.com`;
+
+    const signedGoogleTokenNew = jwt.sign(
+      { sub: mockGoogleIdNew, email: mockGoogleEmailNew, name: 'Google New User', email_verified: true, aud: mockGoogleClientId },
+      'mock_secret_for_decode'
+    );
+
+    const { req: req11b, res: res11b } = createMockReqRes({ body: { idToken: signedGoogleTokenNew } });
+    await googleLogin(req11b, res11b);
+
+    if (res11b.statusCode !== 200 || res11b.body.role !== 'customer') {
+      throw new Error('Test 11 Failed: New Google account was not created with role=customer');
+    }
+    const createdGoogleUser = await User.findOne({ email: mockGoogleEmailNew });
+    if (!createdGoogleUser || createdGoogleUser.role !== 'customer' || createdGoogleUser.googleId !== mockGoogleIdNew) {
+      throw new Error('Test 11 Failed: New Google user record in database not verified');
+    }
+
+    // 3. Existing Logistics Manager signs in with Google -> role PRESERVED (no downgrade)
+    const existingManagerEmail = `existing_mgr_${Date.now()}@company.com`;
+    const existingManager = await User.create({
+      username: `mgr_google_${Date.now()}`,
+      email: existingManagerEmail,
+      password: 'hashedpassword',
+      role: 'logistics_manager',
+      name: 'Existing Fleet Director'
+    });
+
+    const mockGoogleIdMgr = `g_sub_mgr_${Date.now()}`;
+    const signedGoogleTokenMgr = jwt.sign(
+      { sub: mockGoogleIdMgr, email: existingManagerEmail, name: 'Existing Fleet Director', email_verified: true, aud: mockGoogleClientId },
+      'mock_secret_for_decode'
+    );
+
+    const { req: req11c, res: res11c } = createMockReqRes({ body: { idToken: signedGoogleTokenMgr } });
+    await googleLogin(req11c, res11c);
+
+    if (res11c.statusCode !== 200 || res11c.body.role !== 'logistics_manager') {
+      throw new Error('Test 11 Failed: Existing Logistics Manager was downgraded to customer on Google login!');
+    }
+
+    const updatedManager = await User.findById(existingManager._id);
+    if (updatedManager.role !== 'logistics_manager' || updatedManager.googleId !== mockGoogleIdMgr) {
+      throw new Error('Test 11 Failed: Manager googleId not linked or role mutated in database');
+    }
+
+    // Cleanup
+    await User.deleteMany({ _id: { $in: [createdGoogleUser._id, existingManager._id] } });
+    console.log('✅ TEST 11 PASSED: Google Auth creates Customer for new users, securely links and preserves Logistics Manager role for existing managers.');
+
     console.log('\n===============================================================');
-    console.log('🎉 ALL 8 PRODUCTION HARDENING & SECURITY TESTS PASSED (100%)');
+    console.log('🎉 ALL 11 PRODUCTION HARDENING & SECURITY TESTS PASSED (100%)');
     console.log('===============================================================');
+    await mongoose.disconnect();
     process.exit(0);
   } catch (error) {
     console.error('\n❌ Production Hardening Test Suite Failed:', error);

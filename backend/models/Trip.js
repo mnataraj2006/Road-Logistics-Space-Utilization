@@ -68,6 +68,17 @@ const tripSchema = new mongoose.Schema({
     trim: true,
     index: true
   },
+  organizationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'LogisticsCompany',
+    required: false,
+    index: true
+  },
+  logisticsCompanyName: {
+    type: String,
+    trim: true,
+    default: ''
+  },
   activeLoadPlanId: {
     type: String,
     trim: true,
@@ -122,6 +133,23 @@ const tripSchema = new mongoose.Schema({
     index: true
   }],
   timelineAudit: [tripTimelineEventSchema],
+  vehicleSnapshot: {
+    vehicleId: { type: String, default: '' },
+    type: { type: String, default: '' },
+    interiorLength: { type: Number, default: 0 },
+    interiorWidth: { type: Number, default: 0 },
+    interiorHeight: { type: Number, default: 0 },
+    capacityVolume: { type: Number, default: 0 },
+    capacityWeight: { type: Number, default: 0 },
+    dimensions: {
+      length: { type: Number, default: 0 },
+      width: { type: Number, default: 0 },
+      height: { type: Number, default: 0 }
+    },
+    ratePerCbm: { type: Number, default: 150 },
+    ratePerKg: { type: Number, default: 5 },
+    capturedAt: { type: Date, default: Date.now }
+  },
   startedAt: {
     type: Date,
     default: null

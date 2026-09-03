@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import Booking from '../models/Booking.js';
 import Shipment from '../models/Shipment.js';
 import Vehicle from '../models/Vehicle.js';
@@ -7,8 +8,9 @@ import Payment from '../models/Payment.js';
 import crypto from 'crypto';
 import { calculateDeterministicPrice } from '../services/pricingService.js';
 import { calculateTruckSegmentCapacity } from '../services/capacityService.js';
+import { getTenantFilter } from '../middleware/auth.js';
 
-// @desc    Get all bookings
+// @desc    Get all bookings (scoped to tenant or customer)
 // @route   GET /api/bookings
 // @access  Private
 export const getBookings = async (req, res) => {
@@ -16,13 +18,8 @@ export const getBookings = async (req, res) => {
     const limit = parseInt(req.query.limit) || 100;
     
     let filter = {};
-    if (req.user && req.user.role === 'shipper') {
-      filter.shipperId = req.user.username;
-    } else if (req.user && req.user.role === 'carrier') {
-      filter.$or = [
-        { carrierId: req.user.username },
-        { carrierId: 'UNASSIGNED' }
-      ];
+    if (req.user) {
+      filter = getTenantFilter(req.user);
     }
 
     const bookings = await Booking.find(filter)
@@ -38,7 +35,29 @@ export const getBookings = async (req, res) => {
 // @route   POST /api/bookings
 // @access  Private
 export const createBooking = async (req, res) => {
-  const { date, vehicleId, routeId, volume, weight, status, fromStop, toStop, cargoDescription, invoiceNumber, invoiceValue } = req.body;
+  const {
+    date,
+    vehicleId,
+    routeId,
+    volume,
+    weight,
+    status,
+    fromStop,
+    toStop,
+    cargoDescription,
+    invoiceNumber,
+    invoiceValue,
+    fragile,
+    stackable,
+    packageCount,
+    length,
+    width,
+    height,
+    maxStackWeight,
+    allowRotation,
+    cargoCategory,
+    priority
+  } = req.body;
 
   try {
     let route = null;
@@ -51,6 +70,16 @@ export const createBooking = async (req, res) => {
 
     const newVolume = parseFloat(volume);
     const newWeight = parseFloat(weight);
+    const isFragile = fragile === true || fragile === 'true';
+    const isStackable = stackable === undefined ? true : (stackable === true || stackable === 'true');
+    const canRotate = allowRotation === undefined ? true : (allowRotation === true || allowRotation === 'true');
+    const numPackages = Number(packageCount) || 1;
+    const len = Number(length) || 0;
+    const wid = Number(width) || 0;
+    const hgt = Number(height) || 0;
+    const maxStack = Number(maxStackWeight) || (isStackable ? 1000 : 0);
+    const category = cargoCategory || 'GENERAL';
+    const prio = priority || 'STANDARD';
 
     let vehicle = null;
     let finalVehicleId = 'UNASSIGNED';
@@ -263,19 +292,32 @@ export const createBooking = async (req, res) => {
     });
     const revenue = pricingQuote.finalPrice;
 
+    const orgId = req.user?.organizationId || vehicle?.organizationId || null;
+    const compName = req.user?.companyName || vehicle?.logisticsCompanyName || '';
+
     // 1. Create backing physical Shipment
     const shipmentId = `SHP-${bookingId}`;
     const newShipment = new Shipment({
       shipmentId,
       customer: shipper,
       shipperId,
+      organizationId: orgId,
+      logisticsCompanyName: compName,
       cargoDescription: cargoDescription || '',
-      packageCount: 1,
+      packageCount: numPackages,
+      length: len,
+      width: wid,
+      height: hgt,
       volume: newVolume,
       weight: newWeight,
+      fragile: isFragile,
+      stackable: isStackable,
+      maxStackWeight: maxStack,
+      allowRotation: canRotate,
+      priority: prio,
       pickupStop: fromStop || (route ? route.source : 'Origin'),
       deliveryStop: toStop || (route ? route.destination : 'Destination'),
-      requestedDate: new Date(date),
+      requestedDate: new Date(date || Date.now()),
       status: 'BOOKED',
       invoiceNumber: invoiceNumber || '',
       invoiceValue: invoiceValue !== undefined ? Number(invoiceValue) : 0
@@ -288,7 +330,9 @@ export const createBooking = async (req, res) => {
       shipment: savedShipment._id,
       shipmentId: savedShipment.shipmentId,
       customer: shipper,
-      date: new Date(date),
+      organizationId: orgId,
+      logisticsCompanyName: compName,
+      date: new Date(date || Date.now()),
       vehicle,
       vehicleId: finalVehicleId,
       shipper,
@@ -301,6 +345,16 @@ export const createBooking = async (req, res) => {
       volume: newVolume,
       revenue,
       price: revenue,
+      fragile: isFragile,
+      stackable: isStackable,
+      packageCount: numPackages,
+      length: len,
+      width: wid,
+      height: hgt,
+      maxStackWeight: maxStack,
+      allowRotation: canRotate,
+      cargoCategory: category,
+      priority: prio,
       requestedSegment: {
         fromStop: fromStop || (route ? route.source : ''),
         toStop: toStop || (route ? route.destination : '')
@@ -310,8 +364,8 @@ export const createBooking = async (req, res) => {
         weight: newWeight
       },
       status: status || 'PENDING',
-      fromStop: fromStop || '',
-      toStop: toStop || '',
+      fromStop: fromStop || (route ? route.source : ''),
+      toStop: toStop || (route ? route.destination : ''),
       cargoDescription: cargoDescription || '',
       invoiceNumber: invoiceNumber || '',
       invoiceValue: invoiceValue !== undefined ? Number(invoiceValue) : 0
@@ -372,10 +426,10 @@ export const getBookingTrends = async (req, res) => {
     cutoffDate.setDate(cutoffDate.getDate() - days);
 
     let matchFilter = { date: { $gte: cutoffDate } };
-    if (req.user && req.user.role === 'shipper') {
+    if (req.user && (req.user.role === 'customer' || req.user.role === 'shipper')) {
       matchFilter.shipperId = req.user.username;
-    } else if (req.user && req.user.role === 'carrier') {
-      matchFilter.carrierId = req.user.username;
+    } else if (req.user && req.user.role === 'logistics_manager' && req.user.carrierId) {
+      matchFilter.carrierId = req.user.carrierId;
     }
 
     const trends = await Booking.aggregate([
@@ -401,10 +455,10 @@ export const getBookingTrends = async (req, res) => {
     const routeMap = new Map(routes.map(r => [r.routeId, r]));
 
     let tripMatchFilter = { date: { $gte: cutoffDate }, status: { $ne: 'Cancelled' } };
-    if (req.user && req.user.role === 'shipper') {
+    if (req.user && (req.user.role === 'customer' || req.user.role === 'shipper')) {
       tripMatchFilter.shipperId = req.user.username;
-    } else if (req.user && req.user.role === 'carrier') {
-      tripMatchFilter.carrierId = req.user.username;
+    } else if (req.user && req.user.role === 'logistics_manager' && req.user.carrierId) {
+      tripMatchFilter.carrierId = req.user.carrierId;
     }
 
     // Find all unique trips per day to aggregate operating costs
@@ -483,10 +537,10 @@ export const getDashboardKPIs = async (req, res) => {
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
     let matchFilter = { date: { $gte: thirtyDaysAgo }, status: { $ne: 'Cancelled' } };
-    if (req.user && req.user.role === 'shipper') {
+    if (req.user && (req.user.role === 'customer' || req.user.role === 'shipper')) {
       matchFilter.shipperId = req.user.username;
-    } else if (req.user && req.user.role === 'carrier') {
-      matchFilter.carrierId = req.user.username;
+    } else if (req.user && req.user.role === 'logistics_manager' && req.user.carrierId) {
+      matchFilter.carrierId = req.user.carrierId;
     }
 
     const kpis = await Booking.aggregate([
@@ -504,9 +558,9 @@ export const getDashboardKPIs = async (req, res) => {
 
     let vehicleFilter = { status: 'Active' };
     let routeFilter = {};
-    if (req.user && req.user.role === 'carrier') {
-      vehicleFilter.carrierId = req.user.username;
-      routeFilter.carrierId = req.user.username;
+    if (req.user && req.user.role === 'logistics_manager' && req.user.carrierId) {
+      vehicleFilter.carrierId = req.user.carrierId;
+      routeFilter.carrierId = req.user.carrierId;
     }
     const activeVehiclesCount = await Vehicle.countDocuments(vehicleFilter);
     const totalRoutesCount = await Route.countDocuments(routeFilter);
@@ -518,10 +572,10 @@ export const getDashboardKPIs = async (req, res) => {
     const routeMap = new Map(routes.map(r => [r.routeId, r]));
 
     let tripMatchFilter = { date: { $gte: thirtyDaysAgo }, status: { $ne: 'Cancelled' } };
-    if (req.user && req.user.role === 'shipper') {
+    if (req.user && (req.user.role === 'customer' || req.user.role === 'shipper')) {
       tripMatchFilter.shipperId = req.user.username;
-    } else if (req.user && req.user.role === 'carrier') {
-      tripMatchFilter.carrierId = req.user.username;
+    } else if (req.user && req.user.role === 'logistics_manager' && req.user.carrierId) {
+      tripMatchFilter.carrierId = req.user.carrierId;
     }
 
     // Identify all unique trips in the last 30 days to calculate operating cost and occupancy
@@ -741,3 +795,191 @@ export const bulkUpdateBookings = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+// @desc    Update an existing booking / consignment
+// @route   PUT /api/bookings/:id
+// @access  Private (Logistics Manager / Shipper)
+export const updateBooking = async (req, res) => {
+  try {
+    const booking = await Booking.findOne({
+      $or: [
+        { bookingId: req.params.id },
+        { _id: mongoose.isValidObjectId(req.params.id) ? req.params.id : null }
+      ]
+    });
+    if (!booking) {
+      return res.status(404).json({ message: 'Consignment / Booking not found' });
+    }
+
+    if (booking.isLocked && req.body.isUnlockOverride !== true) {
+      const { length, width, height, volume, fromStop, toStop } = req.body;
+      if (
+        (length !== undefined && Number(length) !== booking.length) ||
+        (width !== undefined && Number(width) !== booking.width) ||
+        (height !== undefined && Number(height) !== booking.height) ||
+        (volume !== undefined && Number(volume) !== booking.volume) ||
+        (fromStop !== undefined && fromStop !== booking.fromStop) ||
+        (toStop !== undefined && toStop !== booking.toStop)
+      ) {
+        return res.status(409).json({
+          message: `Consignment ${booking.bookingId} is locked and allocated to Trip ${booking.allocatedTripId || 'READY_FOR_DISPATCH'}. Unlock the trip load plan in Space Optimizer before modifying geometry or route.`
+        });
+      }
+    }
+
+    const {
+      cargoDescription,
+      shipperId,
+      cargoCategory,
+      packageCount,
+      length,
+      width,
+      height,
+      volume,
+      weight,
+      fragile,
+      stackable,
+      allowRotation,
+      maxStackWeight,
+      priority,
+      routeId,
+      fromStop,
+      toStop,
+      vehicleId,
+      status,
+      invoiceNumber,
+      invoiceValue
+    } = req.body;
+
+    if (cargoDescription !== undefined) booking.cargoDescription = cargoDescription;
+    if (shipperId !== undefined) booking.shipperId = shipperId;
+    if (cargoCategory !== undefined) booking.cargoCategory = cargoCategory;
+    if (packageCount !== undefined) booking.packageCount = Number(packageCount);
+    if (length !== undefined) booking.length = Number(length);
+    if (width !== undefined) booking.width = Number(width);
+    if (height !== undefined) booking.height = Number(height);
+    if (volume !== undefined) booking.volume = Number(volume);
+    if (weight !== undefined) booking.weight = Number(weight);
+    if (fragile !== undefined) booking.fragile = Boolean(fragile);
+    if (stackable !== undefined) booking.stackable = Boolean(stackable);
+    if (allowRotation !== undefined) booking.allowRotation = Boolean(allowRotation);
+    if (maxStackWeight !== undefined) booking.maxStackWeight = Number(maxStackWeight);
+    if (priority !== undefined) booking.priority = priority;
+    if (routeId !== undefined) booking.routeId = routeId;
+    if (fromStop !== undefined) {
+      booking.fromStop = fromStop;
+      if (!booking.requestedSegment) booking.requestedSegment = {};
+      booking.requestedSegment.fromStop = fromStop;
+    }
+    if (toStop !== undefined) {
+      booking.toStop = toStop;
+      if (!booking.requestedSegment) booking.requestedSegment = {};
+      booking.requestedSegment.toStop = toStop;
+    }
+    if (vehicleId !== undefined) {
+      booking.vehicleId = vehicleId;
+      if (vehicleId !== 'UNASSIGNED') {
+        const v = await Vehicle.findOne({ vehicleId });
+        if (v) {
+          booking.vehicle = v._id;
+          booking.carrier = v.carrier;
+          booking.carrierId = v.carrierId;
+        }
+      } else {
+        booking.vehicle = null;
+      }
+    }
+    if (status !== undefined) booking.status = status;
+    if (invoiceNumber !== undefined) booking.invoiceNumber = invoiceNumber;
+    if (invoiceValue !== undefined) booking.invoiceValue = Number(invoiceValue);
+
+    // Recalculate price if volume changed
+    if (volume !== undefined) {
+      const pricingQuote = calculateDeterministicPrice({
+        routeDistance: 350,
+        volume: booking.volume,
+        weight: booking.weight,
+        serviceTier: 'STANDARD',
+        cargoType: 'GENERAL',
+        isUnderutilizedRoute: false
+      });
+      booking.revenue = pricingQuote.finalPrice;
+      booking.price = pricingQuote.finalPrice;
+    }
+
+    const updated = await booking.save();
+
+    // Update backing Shipment if linked
+    await Shipment.updateMany(
+      {
+        $or: [
+          { _id: booking.shipment },
+          { shipmentId: booking.shipmentId },
+          { shipmentId: `SHP-${booking.bookingId}` }
+        ].filter(cond => Object.values(cond)[0] != null)
+      },
+      {
+        $set: {
+          cargoDescription: booking.cargoDescription,
+          volume: booking.volume,
+          weight: booking.weight,
+          length: booking.length,
+          width: booking.width,
+          height: booking.height,
+          packageCount: booking.packageCount,
+          fragile: booking.fragile,
+          stackable: booking.stackable,
+          allowRotation: booking.allowRotation,
+          maxStackWeight: booking.maxStackWeight,
+          priority: booking.priority,
+          pickupStop: booking.fromStop,
+          deliveryStop: booking.toStop,
+          vehicleId: booking.vehicleId,
+          assignedVehicleId: booking.vehicleId,
+          status: booking.vehicleId && booking.vehicleId !== 'UNASSIGNED' ? 'ALLOCATED' : booking.status,
+          invoiceNumber: booking.invoiceNumber,
+          invoiceValue: booking.invoiceValue
+        }
+      }
+    );
+
+    res.json(updated);
+  } catch (error) {
+    console.error('updateBooking error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Delete a booking / consignment
+// @route   DELETE /api/bookings/:id
+// @access  Private (Logistics Manager / Admin)
+export const deleteBooking = async (req, res) => {
+  try {
+    const booking = await Booking.findOne({
+      $or: [
+        { bookingId: req.params.id },
+        { _id: mongoose.isValidObjectId(req.params.id) ? req.params.id : null }
+      ]
+    });
+    if (!booking) {
+      return res.status(404).json({ message: 'Consignment / Booking not found' });
+    }
+
+    if (booking.isLocked) {
+      return res.status(409).json({
+        message: `Cannot delete consignment ${booking.bookingId}: It is locked and allocated to Trip ${booking.allocatedTripId || 'READY_FOR_DISPATCH'}. Unlock the load plan first.`
+      });
+    }
+
+    if (booking.shipment) {
+      await Shipment.deleteOne({ _id: booking.shipment });
+    }
+    await Booking.deleteOne({ _id: booking._id });
+
+    res.json({ success: true, message: `Consignment ${booking.bookingId} deleted successfully.` });
+  } catch (error) {
+    console.error('deleteBooking error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+

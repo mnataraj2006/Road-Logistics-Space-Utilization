@@ -8,8 +8,10 @@ import {
   generateTripLoadPlan,
   getTripLoadPlan,
   approveTripLoadPlan,
+  unlockTripLoadPlan,
   rejectTripLoadPlan,
   dispatchPlannedTrip,
+  cancelTripController,
   previewDynamicReoptimizationController,
   applyDynamicReoptimizationController
 } from '../controllers/tripController.js';
@@ -38,8 +40,13 @@ router.post('/:tripId/reoptimize/apply', protect, applyDynamicReoptimizationCont
 
 // Load Plan inspection, approval, rejection, and dispatch
 router.get('/:tripId/load-plan', protect, getTripLoadPlan);
+router.post('/:tripId/load-plan/approve', protect, approveTripLoadPlan);
 router.post('/:tripId/load-plan/:loadPlanId/approve', protect, approveTripLoadPlan);
+router.post('/:tripId/load-plan/unlock', protect, unlockTripLoadPlan);
+router.post('/:tripId/load-plan/:loadPlanId/unlock', protect, unlockTripLoadPlan);
+router.post('/:tripId/load-plan/reject', protect, rejectTripLoadPlan);
 router.post('/:tripId/load-plan/:loadPlanId/reject', protect, rejectTripLoadPlan);
 router.post('/:tripId/dispatch', protect, dispatchPlannedTrip);
+router.post('/:tripId/cancel', protect, cancelTripController);
 
 export default router;

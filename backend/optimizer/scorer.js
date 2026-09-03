@@ -18,6 +18,21 @@ export const calculateObjectiveScore = ({
 }) => {
   const weights = { ...DEFAULT_OBJECTIVE_WEIGHTS, ...customWeights };
 
+  // If no assignments were placed, score is 0
+  if (!assignments || assignments.length === 0) {
+    return {
+      totalScore: 0,
+      breakdown: {
+        volumeScore: 0,
+        weightScore: 0,
+        priorityScore: 0,
+        accessibilityScore: 0,
+        wastedPenalty: 0,
+        totalObstructions: 0
+      }
+    };
+  }
+
   const volUtil = utilizationReport.overallVolumeUtilization; // 0 - 100
   const wtUtil = utilizationReport.overallWeightUtilization;   // 0 - 100
 

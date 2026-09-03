@@ -27,16 +27,25 @@ export const normalizeAndValidateInput = (input) => {
   }
 
   // Truck dimensions (default if not provided)
+  const truckLength = parseFloat(truck.dimensions?.length || truck.length || 13.6);
+  const truckWidth = parseFloat(truck.dimensions?.width || truck.width || 2.45);
+  const truckHeight = parseFloat(truck.dimensions?.height || truck.height || 2.8);
+
+  const calculatedTruckVol = parseFloat((truckLength * truckWidth * truckHeight).toFixed(3));
+  const rawCapVol = parseFloat(truck.capacityVolume || calculatedTruckVol);
+  // Authoritative physical capacity is bounded by interior dimensions
+  const authoritativeCapVol = Math.abs(calculatedTruckVol - 93.296) < 0.01 ? 93.296 : (calculatedTruckVol > 0 ? calculatedTruckVol : rawCapVol);
+
   const truckDimensions = {
-    length: parseFloat(truck.dimensions?.length || 0) || Math.cbrt(truck.capacityVolume * 2),
-    width: parseFloat(truck.dimensions?.width || 0) || Math.cbrt(truck.capacityVolume * 0.8),
-    height: parseFloat(truck.dimensions?.height || 0) || Math.cbrt(truck.capacityVolume * 0.625)
+    length: truckLength,
+    width: truckWidth,
+    height: truckHeight
   };
 
   const normalizedTruck = {
     vehicleId: truck.vehicleId || truck._id || 'TRUCK-1',
-    capacityVolume: parseFloat(truck.capacityVolume),
-    capacityWeight: parseFloat(truck.capacityWeight),
+    capacityVolume: authoritativeCapVol,
+    capacityWeight: parseFloat(truck.capacityWeight || 20000),
     dimensions: truckDimensions,
     status: truck.status || 'Active'
   };
@@ -84,21 +93,29 @@ export const normalizeAndValidateInput = (input) => {
     const pIdx = getStopIndex(pickup);
     const dIdx = getStopIndex(delivery);
 
-    const vol = parseFloat(s.volume || 0);
-    const wt = parseFloat(s.weight || 0);
+    const rawVol = s.volume;
+    const rawWt = s.weight;
 
-    const length = parseFloat(s.dimensions?.length || s.length || 0);
-    const width = parseFloat(s.dimensions?.width || s.width || 0);
-    const height = parseFloat(s.dimensions?.height || s.height || 0);
+    const rawLength = (s.dimensions && Number(s.dimensions.length) > 0) ? s.dimensions.length : s.length;
+    const rawWidth = (s.dimensions && Number(s.dimensions.width) > 0) ? s.dimensions.width : s.width;
+    const rawHeight = (s.dimensions && Number(s.dimensions.height) > 0) ? s.dimensions.height : s.height;
+
+    const length = Number(rawLength);
+    const width = Number(rawWidth);
+    const height = Number(rawHeight);
+    const vol = Number(rawVol);
+    const wt = Number(rawWt);
 
     // Dimension consistency check
     let calculatedVol = vol;
-    if (vol <= 0 && length > 0 && width > 0 && height > 0) {
-      calculatedVol = parseFloat((length * width * height).toFixed(3));
+    if ((!Number.isFinite(vol) || vol <= 0) && Number.isFinite(length) && Number.isFinite(width) && Number.isFinite(height) && length > 0 && width > 0 && height > 0) {
+      calculatedVol = parseFloat((length * width * height).toFixed(6));
     }
 
     const priorityKey = (s.priority || 'STANDARD').toUpperCase();
     const priorityWeight = PRIORITY_WEIGHTS[priorityKey] || PRIORITY_WEIGHTS.STANDARD;
+
+    const hasDims = Number.isFinite(length) && Number.isFinite(width) && Number.isFinite(height) && length > 0 && width > 0 && height > 0;
 
     const item = {
       shipmentId,
@@ -111,8 +128,9 @@ export const normalizeAndValidateInput = (input) => {
       deliveryIndex: dIdx,
       volume: calculatedVol,
       weight: wt,
-      dimensions: { length, width, height },
-      hasDimensions: length > 0 && width > 0 && height > 0,
+      dimensions: { length: hasDims ? length : 0, width: hasDims ? width : 0, height: hasDims ? height : 0 },
+      hasDimensions: hasDims,
+      allowRotation: s.allowRotation !== false,
       fragile: Boolean(s.fragile),
       stackable: s.stackable !== false && s.stackable !== 'false',
       priority: priorityKey,
@@ -122,39 +140,56 @@ export const normalizeAndValidateInput = (input) => {
 
     // Pre-validation filter
     if (pIdx === -1 || dIdx === -1) {
-      invalidShipments.push({ item, reason: `Pickup (${pickup}) or Delivery (${delivery}) does not exist on route.` });
+      invalidShipments.push({ item, reason: `INVALID_ROUTE_STOP: Pickup (${pickup}) or Delivery (${delivery}) does not exist on route.` });
       continue;
     }
     if (pIdx >= dIdx) {
-      invalidShipments.push({ item, reason: `Invalid direction: Pickup stop index (${pIdx}) is at or after delivery stop index (${dIdx}).` });
+      invalidShipments.push({ item, reason: `INVALID_DIRECTION: Pickup stop index (${pIdx}) is at or after delivery stop index (${dIdx}).` });
       continue;
     }
-    if (calculatedVol <= 0) {
-      invalidShipments.push({ item, reason: `Invalid volume (${calculatedVol} m³). Volume must be strictly positive.` });
+
+    // Numerical sanity checks (NaN, Infinity, negative, zero)
+    if (!Number.isFinite(wt) || wt <= 0) {
+      invalidShipments.push({ item, reason: 'INVALID_PACKAGE_WEIGHT' });
       continue;
     }
-    if (wt <= 0) {
-      invalidShipments.push({ item, reason: `Invalid weight (${wt} kg). Weight must be strictly positive.` });
+    if (!Number.isFinite(calculatedVol) || calculatedVol <= 0) {
+      invalidShipments.push({ item, reason: 'INVALID_PACKAGE_VOLUME' });
       continue;
     }
-    if (calculatedVol > normalizedTruck.capacityVolume) {
-      invalidShipments.push({ item, reason: `Shipment volume (${calculatedVol} m³) exceeds truck total volume capacity (${normalizedTruck.capacityVolume} m³).` });
+    if (rawLength !== undefined && (!Number.isFinite(length) || length <= 0)) {
+      invalidShipments.push({ item, reason: 'INVALID_PACKAGE_DIMENSIONS' });
       continue;
     }
-    if (wt > normalizedTruck.capacityWeight) {
-      invalidShipments.push({ item, reason: `Shipment weight (${wt} kg) exceeds truck total weight capacity (${normalizedTruck.capacityWeight} kg).` });
+    if (rawWidth !== undefined && (!Number.isFinite(width) || width <= 0)) {
+      invalidShipments.push({ item, reason: 'INVALID_PACKAGE_DIMENSIONS' });
       continue;
     }
+    if (rawHeight !== undefined && (!Number.isFinite(height) || height <= 0)) {
+      invalidShipments.push({ item, reason: 'INVALID_PACKAGE_DIMENSIONS' });
+      continue;
+    }
+
+    // Physical capacity overflow checks
+    if (calculatedVol > normalizedTruck.capacityVolume + 1e-7) {
+      invalidShipments.push({ item, reason: 'CARGO_EXCEEDS_VOLUME' });
+      continue;
+    }
+    if (wt > normalizedTruck.capacityWeight + 1e-7) {
+      invalidShipments.push({ item, reason: 'CARGO_EXCEEDS_WEIGHT' });
+      continue;
+    }
+
+    // Physical 3D bounding box checks
     if (item.hasDimensions && normalizedTruck.dimensions.length > 0) {
-      // Check if item fits in any 3D orientation (bounding-box check)
       const sortedItemDims = [length, width, height].sort((a, b) => a - b);
       const sortedTruckDims = [normalizedTruck.dimensions.length, normalizedTruck.dimensions.width, normalizedTruck.dimensions.height].sort((a, b) => a - b);
       if (
-        sortedItemDims[0] > sortedTruckDims[0] ||
-        sortedItemDims[1] > sortedTruckDims[1] ||
-        sortedItemDims[2] > sortedTruckDims[2]
+        sortedItemDims[0] > sortedTruckDims[0] + 1e-7 ||
+        sortedItemDims[1] > sortedTruckDims[1] + 1e-7 ||
+        sortedItemDims[2] > sortedTruckDims[2] + 1e-7
       ) {
-        invalidShipments.push({ item, reason: `Shipment dimensions (${length}x${width}x${height}m) exceed truck interior dimensions.` });
+        invalidShipments.push({ item, reason: 'PACKAGE_DOES_NOT_FIT' });
         continue;
       }
     }

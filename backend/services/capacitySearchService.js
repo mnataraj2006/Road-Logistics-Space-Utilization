@@ -256,6 +256,8 @@ export const searchAvailableTruckSpace = async ({
       capacityVolume: vehicle.capacityVolume,
       capacityWeight: vehicle.capacityWeight,
       dimensions: vehicle.dimensions || { length: 0, width: 0, height: 0 },
+      organizationId: vehicle.organizationId,
+      logisticsCompanyName: vehicle.logisticsCompanyName || 'Apex Logistics',
       carrierId: vehicle.carrierId,
       baseLocation: vehicle.baseLocation || '',
       transitStatus: vehicle.transitStatus,
@@ -431,6 +433,7 @@ export const bookTruckCapacity = async ({
   const { default: Shipment } = await import('../models/Shipment.js');
   const shipment = new Shipment({
     shipmentId,
+    bookingId,
     customer: customerUser._id,
     shipperId: customerUser.username,
     cargoDescription,
@@ -443,6 +446,8 @@ export const bookTruckCapacity = async ({
     pickupStop: pickup,
     deliveryStop: delivery,
     requestedDate: targetDate,
+    organizationId: vehicle.organizationId,
+    logisticsCompanyName: vehicle.logisticsCompanyName || '',
     status: 'ALLOCATED',
     invoiceNumber,
     invoiceValue: Number(invoiceValue) || 0
@@ -454,8 +459,11 @@ export const bookTruckCapacity = async ({
     shipment: shipment._id,
     shipmentId: shipment.shipmentId,
     customer: customerUser._id,
+    customerId: customerUser.username || String(customerUser._id),
     shipper: customerUser._id,
     shipperId: customerUser.username,
+    organizationId: vehicle.organizationId,
+    logisticsCompanyName: vehicle.logisticsCompanyName || '',
     carrier: vehicle.carrier,
     carrierId: vehicle.carrierId,
     vehicle: vehicle._id,

@@ -3,7 +3,7 @@ import { ShieldCheck, QrCode, CheckCircle2, AlertTriangle, RefreshCw, MapPin, Tr
 import axios from 'axios';
 
 const ManagerStopOpsView = () => {
-  const [tripId, setTripId] = useState('TRIP-LIVE-DEMO');
+  const [tripId, setTripId] = useState('');
   const [tokenInput, setTokenInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [verifyResult, setVerifyResult] = useState(null);

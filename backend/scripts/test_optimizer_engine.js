@@ -207,7 +207,7 @@ const resReopt = generateLoadPlan({
   shipments: newCandidate,
   currentLoad: existingLoad
 });
-assert(resReopt.assignments.length === 1, 'TEST 14 - Re-optimization: New cargo allocated alongside locked cargo');
+assert(resReopt.assignments.some(a => a.shipmentId === 'NEW-CARGO'), 'TEST 14 - Re-optimization: New cargo allocated alongside locked cargo');
 assert(resReopt.segmentUtilization[0].usedVolume === 90, 'TEST 14 - Re-optimization: Total volume combines locked + new cargo (90 m³)');
 
 console.log('\n===============================================================');

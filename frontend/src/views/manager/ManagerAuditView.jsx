@@ -7,7 +7,7 @@ import axios from 'axios';
 
 const ManagerAuditView = () => {
   const [activeTab, setActiveTab] = useState('TRACE'); // 'TRACE' | 'UNALLOCATED' | 'LEDGER'
-  const [traceId, setTraceId] = useState('BKG-001');
+  const [traceId, setTraceId] = useState('');
   const [traceEvents, setTraceEvents] = useState([]);
   const [traceLoading, setTraceLoading] = useState(false);
   const [traceError, setTraceError] = useState(null);
@@ -34,83 +34,11 @@ const ManagerAuditView = () => {
       if (res.data.events && res.data.events.length > 0) {
         setTraceEvents(res.data.events);
       } else {
-        // Fallback synthetic lifecycle demonstration for demo consistency
-        setTraceEvents([
-          {
-            eventId: 'EVT-1788258001-A1',
-            eventType: 'SHIPMENT_CREATED',
-            entityType: 'Shipment',
-            entityId: traceId,
-            actor: 'customer_acme',
-            timestamp: new Date(Date.now() - 7200000).toISOString(),
-            previousState: 'NONE',
-            resultingState: 'DRAFT',
-            metadata: { pickup: 'Chennai', delivery: 'Madurai', volume: 20, weight: 3500 }
-          },
-          {
-            eventId: 'EVT-1788258002-B2',
-            eventType: 'BOOKING_CREATED',
-            entityType: 'Booking',
-            entityId: traceId,
-            actor: 'customer_acme',
-            timestamp: new Date(Date.now() - 7100000).toISOString(),
-            previousState: 'DRAFT',
-            resultingState: 'ALLOCATED',
-            metadata: { vehicleId: 'TRK-FASTLANE-08', routeId: 'RTE-TN-CORRIDOR', price: 4200 }
-          },
-          {
-            eventId: 'EVT-1788258003-C3',
-            eventType: 'LOAD_PLAN_APPROVED',
-            entityType: 'LoadPlan',
-            entityId: 'LP-TRIP-01-v1',
-            tripId: 'TRIP-CH-MAD-01',
-            actor: 'manager_ops',
-            timestamp: new Date(Date.now() - 5400000).toISOString(),
-            previousState: 'GENERATED',
-            resultingState: 'APPROVED',
-            metadata: { version: 1, expectedVersion: 1 }
-          },
-          {
-            eventId: 'EVT-1788258004-D4',
-            eventType: 'TRIP_DISPATCHED',
-            entityType: 'Trip',
-            entityId: 'TRIP-CH-MAD-01',
-            tripId: 'TRIP-CH-MAD-01',
-            actor: 'manager_ops',
-            timestamp: new Date(Date.now() - 3600000).toISOString(),
-            previousState: 'READY_FOR_DISPATCH',
-            resultingState: 'DISPATCHED',
-            metadata: { initialOriginVolume: 70 }
-          },
-          {
-            eventId: 'EVT-1788258005-E5',
-            eventType: 'PACKAGE_LOADED',
-            entityType: 'Shipment',
-            entityId: traceId,
-            tripId: 'TRIP-CH-MAD-01',
-            actor: 'driver_fastlane',
-            timestamp: new Date(Date.now() - 3500000).toISOString(),
-            previousState: 'ALLOCATED',
-            resultingState: 'IN_TRANSIT',
-            metadata: { pickupLocation: 'Chennai', destination: 'Madurai' }
-          },
-          {
-            eventId: 'EVT-1788258006-F6',
-            eventType: 'STOP_ARRIVAL_VERIFIED',
-            entityType: 'Stop',
-            entityId: 'STP-SALEM-02',
-            tripId: 'TRIP-CH-MAD-01',
-            actor: 'driver_fastlane',
-            timestamp: new Date(Date.now() - 1800000).toISOString(),
-            previousState: 'IN_TRANSIT',
-            resultingState: 'VERIFIED',
-            metadata: { location: 'Salem', sequence: 2, verificationMethod: 'HMAC_SECURE_QR' }
-          }
-        ]);
+        setTraceEvents([]);
       }
     } catch (err) {
       console.error('Trace error:', err);
-      setTraceError('Failed to fetch lifecycle trace.');
+      setTraceError('Failed to fetch lifecycle trace. Ensure the ID is correct and you have manager access.');
     } finally {
       setTraceLoading(false);
     }
@@ -127,39 +55,7 @@ const ManagerAuditView = () => {
       if (res.data.unallocatedShipments && res.data.unallocatedShipments.length > 0) {
         setUnallocatedList(res.data.unallocatedShipments);
       } else {
-        // Fallback illustrative constraint audit records
-        setUnallocatedList([
-          {
-            shipmentId: 'SHP-OVER-LENGTH-99',
-            tripId: 'TRIP-CH-MAD-01',
-            reason: 'Shipment length (15.0m) exceeds truck cargo interior length (13.6m).',
-            violatedConstraints: ['PHYSICAL_DIMENSIONS_OVERFLOW', 'BOUNDARY_CONTAINMENT'],
-            requestedVolume: 45,
-            requestedWeight: 8000,
-            routeSegment: 'Chennai → Madurai',
-            timestamp: new Date(Date.now() - 7200000).toISOString()
-          },
-          {
-            shipmentId: 'SHP-REVERSE-HOP-42',
-            tripId: 'TRIP-CH-MAD-01',
-            reason: 'Reverse direction hop (Madurai -> Salem) cannot be serviced on forward route (Chennai -> Madurai).',
-            violatedConstraints: ['FORWARD_ROUTE_INVARIANT'],
-            requestedVolume: 12,
-            requestedWeight: 2200,
-            routeSegment: 'Madurai → Salem',
-            timestamp: new Date(Date.now() - 7200000).toISOString()
-          },
-          {
-            shipmentId: 'SHP-PEAK-OVERFLOW-77',
-            tripId: 'TRIP-CH-MAD-01',
-            reason: 'Segment Salem → Coimbatore capacity exhausted (Occupied 95m³ + Requested 30m³ > 100m³ Capacity).',
-            violatedConstraints: ['SEGMENT_VOLUME_CAPACITY'],
-            requestedVolume: 30,
-            requestedWeight: 5500,
-            routeSegment: 'Salem → Coimbatore',
-            timestamp: new Date(Date.now() - 7100000).toISOString()
-          }
-        ]);
+        setUnallocatedList([]);
       }
     } catch (err) {
       console.error('Error fetching unallocated audit:', err);
@@ -260,7 +156,26 @@ const ManagerAuditView = () => {
             </form>
           </div>
 
+          {/* Error */}
+          {traceError && (
+            <div className="bg-red-50 border border-red-200 rounded-2xl p-5 text-sm font-semibold text-red-700">
+              {traceError}
+            </div>
+          )}
+
+          {/* Empty state */}
+          {!traceError && !traceLoading && traceEvents.length === 0 && (
+            <div className="bg-white rounded-2xl border border-gray-200 p-10 shadow-xs text-center">
+              <FileCheck className="w-10 h-10 text-gray-200 mx-auto mb-3" />
+              <p className="text-sm font-bold text-gray-400">
+                {traceId ? `No events found for "${traceId}"` : 'Enter a Booking or Shipment ID and click Inspect Lifecycle'}
+              </p>
+              <p className="text-xs text-gray-300 mt-1">Lifecycle events are recorded automatically as operations proceed.</p>
+            </div>
+          )}
+
           {/* Timeline Output */}
+          {!traceError && traceEvents.length > 0 && (
           <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm space-y-6">
             <div className="flex items-center justify-between border-b border-gray-100 pb-4">
               <div>
@@ -315,6 +230,7 @@ const ManagerAuditView = () => {
               ))}
             </div>
           </div>
+          )}
         </div>
       )}
 
@@ -330,7 +246,14 @@ const ManagerAuditView = () => {
           </div>
 
           <div className="space-y-3">
-            {unallocatedList.map((u, idx) => (
+            {unallocatedList.length === 0 ? (
+              <div className="bg-white rounded-2xl border border-gray-200 p-10 shadow-xs text-center">
+                <CheckCircle2 className="w-10 h-10 text-gray-200 mx-auto mb-3" />
+                <p className="text-sm font-bold text-gray-400">No unallocated cargo records found</p>
+                <p className="text-xs text-gray-300 mt-1">All optimizer rejection reasons appear here when shipments cannot be accommodated.</p>
+              </div>
+            ) : (
+              unallocatedList.map((u, idx) => (
               <div
                 key={idx}
                 className="bg-white rounded-2xl border border-amber-200 p-5 shadow-xs hover:border-amber-300 transition space-y-2"
@@ -368,7 +291,8 @@ const ManagerAuditView = () => {
                   <span>Weight: <strong>{u.requestedWeight} kg</strong></span>
                 </div>
               </div>
-            ))}
+              ))
+            )}
           </div>
         </div>
       )}
@@ -398,17 +322,25 @@ const ManagerAuditView = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {ledgerEvents.map((ev) => (
-                  <tr key={ev.eventId || ev._id} className="hover:bg-gray-50/70 transition">
-                    <td className="py-3 font-mono font-bold text-gray-900">{ev.eventId}</td>
-                    <td className="py-3 font-mono font-bold text-emerald-800">{ev.eventType}</td>
-                    <td className="py-3 text-gray-700">{ev.entityType} ({ev.entityId})</td>
-                    <td className="py-3 font-mono text-gray-600">{ev.tripId || '—'}</td>
-                    <td className="py-3 text-gray-800 font-semibold">{ev.actor}</td>
-                    <td className="py-3 text-gray-600">{ev.previousState || 'NONE'} → <strong>{ev.resultingState}</strong></td>
-                    <td className="py-3 text-gray-400">{new Date(ev.timestamp).toLocaleString()}</td>
+                {ledgerEvents.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="py-12 text-center text-xs text-gray-400 font-semibold">
+                      No audit events recorded yet. Events are logged automatically as operations are performed.
+                    </td>
                   </tr>
-                ))}
+                ) : (
+                  ledgerEvents.map((ev) => (
+                    <tr key={ev.eventId || ev._id} className="hover:bg-gray-50/70 transition">
+                      <td className="py-3 font-mono font-bold text-gray-900">{ev.eventId}</td>
+                      <td className="py-3 font-mono font-bold text-emerald-800">{ev.eventType}</td>
+                      <td className="py-3 text-gray-700">{ev.entityType} ({ev.entityId})</td>
+                      <td className="py-3 font-mono text-gray-600">{ev.tripId || '—'}</td>
+                      <td className="py-3 text-gray-800 font-semibold">{ev.actor}</td>
+                      <td className="py-3 text-gray-600">{ev.previousState || 'NONE'} → <strong>{ev.resultingState}</strong></td>
+                      <td className="py-3 text-gray-400">{new Date(ev.timestamp).toLocaleString()}</td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>

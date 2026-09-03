@@ -89,8 +89,14 @@ const loadAssignmentSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['PROPOSED', 'ASSIGNED', 'LOADED', 'IN_TRANSIT', 'UNLOADED', 'CANCELLED'],
+    enum: ['PROPOSED', 'ASSIGNED', 'LOADED', 'IN_TRANSIT', 'UNLOADED', 'DELIVERED', 'CANCELLED'],
     default: 'PROPOSED',
+    index: true
+  },
+  physicalStatus: {
+    type: String,
+    enum: ['WAITING_AT_ORIGIN', 'READY_TO_LOAD', 'ONBOARD', 'DELIVERED', 'CANCELLED'],
+    default: 'WAITING_AT_ORIGIN',
     index: true
   }
 }, {

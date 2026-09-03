@@ -44,9 +44,11 @@ export const protect = async (req, res, next) => {
 };
 
 /**
- * Role-Based Access Control (RBAC) middleware.
+ * Role-Based Access Control (RBAC) middleware for Two-Role Architecture:
+ * 1. 'customer' (Cargo Shipper / Consignor)
+ * 2. 'logistics_manager' (Fleet & Operations Supervisor)
  *
- * @param {...string} allowedRoles - e.g. 'logistics_manager', 'admin', 'carrier', 'shipper'
+ * @param {...string} allowedRoles - e.g. 'logistics_manager', 'customer'
  */
 export const authorizeRoles = (...allowedRoles) => {
   return (req, res, next) => {
@@ -60,16 +62,18 @@ export const authorizeRoles = (...allowedRoles) => {
     }
 
     const userRole = req.user.role;
-    // Admins always have full supervisor access
-    if (userRole === 'admin' || allowedRoles.includes(userRole)) {
-      return next();
-    }
+    // Canonical mapping for role equivalence
+    const canonicalRole = (userRole === 'admin' || userRole === 'carrier')
+      ? 'logistics_manager'
+      : (userRole === 'shipper')
+      ? 'customer'
+      : userRole;
 
-    // Role alias equivalence: customer <-> shipper
-    if (
-      (allowedRoles.includes('customer') && userRole === 'shipper') ||
-      (allowedRoles.includes('shipper') && userRole === 'customer')
-    ) {
+    const normalizedAllowed = allowedRoles.map(r => 
+      (r === 'admin' || r === 'carrier') ? 'logistics_manager' : (r === 'shipper' ? 'customer' : r)
+    );
+
+    if (normalizedAllowed.includes(canonicalRole) || allowedRoles.includes(userRole)) {
       return next();
     }
 
@@ -83,27 +87,62 @@ export const authorizeRoles = (...allowedRoles) => {
 };
 
 /**
- * Enforces resource ownership preventing IDOR (Insecure Direct Object Reference).
+ * Helper to build multi-tenant scoping filters for database queries.
+ * @param {Object} user - Authenticated user from req.user
+ * @returns {Object} MongoDB query filter object
+ */
+export const getTenantFilter = (user) => {
+  if (!user) return { _id: null };
+  if (user.role === 'logistics_manager' || user.role === 'admin' || user.role === 'carrier') {
+    if (user.organizationId) {
+      const orgId = user.organizationId._id || user.organizationId;
+      return {
+        $or: [
+          { organizationId: orgId },
+          { carrier: user._id },
+          { carrierId: user.username },
+          { carrierId: orgId.toString() }
+        ]
+      };
+    }
+    return {
+      $or: [
+        { carrier: user._id },
+        { carrierId: user.username },
+        { carrierId: user.carrierId || user.username }
+      ]
+    };
+  }
+  if (user.role === 'customer' || user.role === 'shipper') {
+    return {
+      $or: [
+        { customer: user._id },
+        { customerId: user.username },
+        { shipper: user._id },
+        { shipperId: user.username }
+      ]
+    };
+  }
+  return {};
+};
+
+/**
+ * Enforces resource ownership preventing IDOR (Insecure Direct Object Reference)
+ * and cross-tenant leakage across logistics organizations.
  *
  * @param {Function} findDocFn - async function(req) => returns document
  * @param {Object} options
- * @param {string} [options.shipperField='shipperId'] - Field holding shipper username or ID
- * @param {string} [options.carrierField='carrierId'] - Field holding carrier ID
+ * @param {string} [options.customerField='customerId'] - Field holding customer username or ID
  */
 export const enforceResourceOwnership = (findDocFn, {
-  shipperField = 'shipperId',
-  carrierField = 'carrierId'
+  customerField = 'customerId',
+  shipperField = 'shipperId'
 } = {}) => {
   return async (req, res, next) => {
     try {
       const user = req.user;
       if (!user) {
         return res.status(401).json({ success: false, message: 'Authentication required.' });
-      }
-
-      // Admins and Logistics Managers have global operational oversight
-      if (['admin', 'logistics_manager'].includes(user.role)) {
-        return next();
       }
 
       const doc = await findDocFn(req);
@@ -116,12 +155,42 @@ export const enforceResourceOwnership = (findDocFn, {
         });
       }
 
-      // For Shipper / Customer: verify ownership
-      if (['shipper', 'customer'].includes(user.role)) {
-        const docShipper = doc[shipperField] || doc.shipper || doc.customer;
+      // Tenant isolation for Logistics Managers: resource must belong to their organization
+      if (['logistics_manager', 'admin', 'carrier'].includes(user.role)) {
+        if (user.organizationId && doc.organizationId) {
+          const userOrgId = String(user.organizationId._id || user.organizationId);
+          const docOrgId = String(doc.organizationId._id || doc.organizationId);
+          if (userOrgId !== docOrgId) {
+            return res.status(403).json({
+              success: false,
+              error: 'FORBIDDEN_CROSS_TENANT',
+              message: 'Access Denied: You cannot access or modify operational resources belonging to another logistics company.',
+              correlationId: req.correlationId
+            });
+          }
+        } else if (doc.carrier && String(doc.carrier) !== String(user._id) && doc.carrierId && doc.carrierId !== user.username) {
+          // Fallback legacy carrier check
+          if (user.organizationId && String(doc.carrierId) === String(user.organizationId)) {
+            // matches organizationId
+          } else {
+            return res.status(403).json({
+              success: false,
+              error: 'FORBIDDEN',
+              message: 'Access Denied: Resource belongs to another carrier/logistics organization.',
+              correlationId: req.correlationId
+            });
+          }
+        }
+        req.targetResource = doc;
+        return next();
+      }
+
+      // For Customer: verify ownership of own shipment / booking
+      if (['customer', 'shipper'].includes(user.role)) {
+        const docOwner = doc[customerField] || doc[shipperField] || doc.customer || doc.shipper;
         const isOwner =
-          String(docShipper) === String(user.username) ||
-          String(docShipper) === String(user._id);
+          String(docOwner) === String(user.username) ||
+          String(docOwner) === String(user._id);
 
         if (!isOwner) {
           return res.status(403).json({
@@ -133,31 +202,19 @@ export const enforceResourceOwnership = (findDocFn, {
         }
       }
 
-      // For Carrier: verify vehicle / trip assignment
-      if (user.role === 'carrier') {
-        const docCarrier = doc[carrierField] || doc.carrier;
-        const isCarrierOwner =
-          String(docCarrier) === String(user.carrierId) ||
-          String(docCarrier) === String(user.username) ||
-          String(docCarrier) === String(user._id);
-
-        if (!isCarrierOwner) {
-          return res.status(403).json({
-            success: false,
-            error: 'FORBIDDEN',
-            message: 'Access Denied: You do not have permission to view or modify another carrier\'s record.',
-            correlationId: req.correlationId
-          });
-        }
-      }
-
       req.targetResource = doc;
       next();
     } catch (error) {
-      console.error('enforceResourceOwnership error:', error);
-      res.status(500).json({ success: false, message: 'Failed to verify resource authorization.' });
+      return res.status(500).json({
+        success: false,
+        error: 'AUTHORIZATION_ERROR',
+        message: error.message
+      });
     }
   };
 };
 
-export const admin = authorizeRoles('admin');
+export const logisticsManagerOnly = authorizeRoles('logistics_manager');
+export const customerOnly = authorizeRoles('customer');
+export const admin = authorizeRoles('logistics_manager');
+

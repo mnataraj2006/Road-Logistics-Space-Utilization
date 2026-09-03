@@ -100,12 +100,11 @@ const AdminUsers = () => {
 
       {/* Summary Chips */}
       {summary && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {[
             { label: 'Total Accounts', value: summary.total, color: 'text-gray-900', bg: 'bg-white' },
-            { label: 'Shipper Accounts', value: summary.shippers, color: 'text-blue-600', bg: 'bg-blue-50/50' },
-            { label: 'Carrier Accounts', value: summary.carriers, color: 'text-green-700', bg: 'bg-green-50/50' },
-            { label: 'Admin Accounts', value: summary.admins, color: 'text-purple-600', bg: 'bg-purple-50/50' }
+            { label: 'Customer Accounts', value: summary.customers ?? summary.shippers, color: 'text-blue-600', bg: 'bg-blue-50/50' },
+            { label: 'Logistics Manager Accounts', value: summary.managers ?? summary.carriers, color: 'text-emerald-700', bg: 'bg-emerald-50/50' }
           ].map(c => (
             <div key={c.label} className={`rounded-xl border border-gray-100 p-4 shadow-sm ${c.bg}`}>
               <span className="text-[8px] font-black text-gray-400 uppercase tracking-widest block">{c.label}</span>
@@ -131,7 +130,7 @@ const AdminUsers = () => {
 
         {/* Filter Pills */}
         <div className="flex items-center space-x-1.5 bg-gray-100 p-1 rounded-xl text-[11px] font-bold">
-          {['All', 'Shipper', 'Carrier', 'Admin'].map(role => (
+          {['All', 'Customer', 'Logistics Manager'].map(role => (
             <button
               key={role}
               onClick={() => setRoleFilter(role)}
@@ -264,9 +263,8 @@ const AdminUsers = () => {
               <div>
                 <label className="block text-[9px] font-black text-gray-400 uppercase tracking-widest mb-1.5">Platform Role</label>
                 <select value={role} onChange={e => setRole(e.target.value)} className={inputCls}>
-                  <option value="shipper">Exporter (Shipper)</option>
-                  <option value="carrier">Carrier (Logistics Provider)</option>
-                  <option value="admin">System Administrator</option>
+                  <option value="customer">Customer / Shipper</option>
+                  <option value="logistics_manager">Logistics Manager (Fleet Operator)</option>
                 </select>
               </div>
 

@@ -89,9 +89,12 @@ export const approveLoadPlan = async (loadPlanId, approvedByUserId, session = nu
   const plan = await LoadPlan.findOne({ loadPlanId }).session(session);
   if (!plan) throw new Error(`LoadPlan ${loadPlanId} not found`);
 
+  const now = new Date();
   plan.status = 'APPROVED';
+  plan.isImmutable = true;
   plan.approvedBy = approvedByUserId;
-  plan.approvedAt = new Date();
+  plan.approvedAt = now;
+  plan.lockedAt = now;
   await plan.save({ session });
 
   const assignments = await LoadAssignment.find({ loadPlanId }).session(session);
@@ -103,7 +106,21 @@ export const approveLoadPlan = async (loadPlanId, approvedByUserId, session = nu
     if (assign.bookingId) {
       await Booking.updateOne(
         { bookingId: assign.bookingId },
-        { vehicleId: plan.vehicleId, status: 'ALLOCATED' },
+        {
+          $set: {
+            vehicleId: plan.vehicleId,
+            assignedVehicleId: plan.vehicleId,
+            assignedTripId: plan.tripId,
+            status: 'LOCKED',
+            allocationStatus: 'LOCKED',
+            isLocked: true,
+            lockedAt: now,
+            allocatedTripId: plan.tripId,
+            allocatedLoadPlanId: plan.loadPlanId,
+            allocatedVehicleId: plan.vehicleId,
+            allocatedAt: now
+          }
+        },
         { session }
       );
     }
@@ -111,7 +128,21 @@ export const approveLoadPlan = async (loadPlanId, approvedByUserId, session = nu
     if (assign.shipmentId) {
       await Shipment.updateOne(
         { shipmentId: assign.shipmentId },
-        { status: 'ALLOCATED' },
+        {
+          $set: {
+            vehicleId: plan.vehicleId,
+            assignedVehicleId: plan.vehicleId,
+            assignedTripId: plan.tripId,
+            status: 'LOCKED',
+            allocationStatus: 'LOCKED',
+            isLocked: true,
+            lockedAt: now,
+            allocatedTripId: plan.tripId,
+            allocatedLoadPlanId: plan.loadPlanId,
+            allocatedVehicleId: plan.vehicleId,
+            allocatedAt: now
+          }
+        },
         { session }
       );
     }

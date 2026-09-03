@@ -3,39 +3,29 @@ import { useNavigate, Link } from 'react-router-dom';
 import { AuthContext } from '../context/AuthContext';
 import { GoogleLogin } from '@react-oauth/google';
 import {
-  Lock, User, AlertCircle, Check,
-  Truck, RotateCw, ArrowRight, Package,
+  Lock, User, AlertCircle,
+  Truck, RotateCw, ArrowRight,
   BarChart3, Zap, Globe, Shield
 } from 'lucide-react';
 
 const NAV_LINKS = ['Platform', 'Carriers', 'Shippers', 'Analytics', 'Pricing'];
 
-const STATS = [
-  { value: '1,500+', label: 'Shipments'  },
-  { value: '99.3%',  label: 'ML Accuracy'},
-  { value: '6',      label: 'Carriers'   },
-  { value: '5',      label: 'Lanes'      },
-];
-
 const FEATURES = [
-  { icon: Zap,       text: 'ML Forecasting'  },
-  { icon: Globe,     text: 'Marketplace'     },
-  { icon: BarChart3, text: 'Fleet Analytics' },
-  { icon: Shield,    text: 'Escrow Payments' },
+  { icon: Zap,       text: 'Dynamic Optimization' },
+  { icon: Globe,     text: 'Multi-Stop Corridors' },
+  { icon: BarChart3, text: 'Space Analytics' },
+  { icon: Shield,    text: 'Escrow Settlements' },
 ];
 
 const Login = () => {
   const [username, setUsername] = useState('');
-  const [password,  setPassword]  = useState('');
+  const [password, setPassword] = useState('');
   const { login, user, error, setError, googleLogin } = useContext(AuthContext);
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
-  const roles = [
-    { key: 'admin',              label: 'Demo Admin',    desc: 'Log in as admin',       icon: BarChart3 },
-    { key: 'carrier-safexpress', label: 'Demo Carrier',  desc: 'Log in as carrier',     icon: Truck },
-    { key: 'shipper-apex',       label: 'Demo Exporter', desc: 'Log in as exporter',    icon: Package },
-  ];
+  const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+  const isGoogleAuthConfigured = !!googleClientId && googleClientId !== 'dummy-google-client-id';
 
   const handleGoogleSuccess = async (credentialResponse) => {
     setLoading(true);
@@ -46,7 +36,7 @@ const Login = () => {
   };
 
   const handleGoogleError = () => {
-    setError('Google Sign-In failed. Please try again.');
+    setError('Google Sign-In failed. Please check configuration.');
   };
 
   useEffect(() => {
@@ -57,19 +47,16 @@ const Login = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
-    const ok = await login(username, password);
+    const ok = await login(username.trim(), password);
     setLoading(false);
     if (ok) navigate('/');
   };
-
-  const pickRole = (key) => { setUsername(key); setPassword('admin123'); };
 
   return (
     <div
       className="h-screen flex flex-col overflow-hidden"
       style={{ fontFamily: "'Inter', system-ui, sans-serif", background: '#f8fafc' }}
     >
-
       {/* ── NAV ───────────────────────────────────────── */}
       <header className="shrink-0 w-full flex items-center justify-between px-8 sm:px-14 py-4 bg-white border-b border-gray-100 z-20">
         <div className="flex items-center space-x-3">
@@ -89,9 +76,8 @@ const Login = () => {
         </nav>
 
         <div className="flex items-center space-x-3">
-          <span className="hidden sm:block text-[12px] font-bold text-gray-500 hover:text-gray-800 transition-colors cursor-pointer">Sign In</span>
           <Link to="/signup" className="no-underline flex items-center space-x-1.5 px-4 py-2 bg-[#16a34a] hover:bg-[#15803d] text-white text-[12px] font-black rounded-full shadow-md shadow-green-600/20 transition-all duration-150">
-            <span>Get Started</span>
+            <span>Register Account</span>
             <ArrowRight className="w-3 h-3" />
           </Link>
         </div>
@@ -114,77 +100,58 @@ const Login = () => {
             <span className="text-[#16a34a]">SHIP<br />SMARTER.</span>
           </h1>
 
-          <p className="text-gray-500 text-[13px] font-medium leading-relaxed max-w-md mb-6">
-            Intelligent. Powerful. Reliable. Cargolytics connects carriers and exporters with real-time space utilization, ML-driven route intelligence, and escrow-secured bookings.
+          <p className="text-gray-500 text-[13px] font-medium leading-relaxed max-w-md mb-8">
+            Intelligent. Powerful. Reliable. Cargolytics connects logistics managers and customer shippers with real-time multi-stop truck space optimization, physical load planning, and automated lifecycle dispatch.
           </p>
 
-          <div className="flex flex-wrap items-center gap-3 mb-6">
-            <button className="flex items-center space-x-2 px-5 py-2.5 bg-[#16a34a] hover:bg-[#15803d] text-white text-[12px] font-black rounded-full shadow-lg shadow-green-600/25 transition-all duration-150 cursor-pointer border-none">
-              <span>EXPLORE PLATFORM</span><ArrowRight className="w-3.5 h-3.5" />
-            </button>
-            <button className="flex items-center px-5 py-2.5 border-2 border-gray-300 hover:border-gray-400 bg-white text-gray-700 text-[12px] font-black rounded-full transition-all duration-150 cursor-pointer">
-              LEARN MORE
-            </button>
-          </div>
-
-          <div className="flex flex-wrap gap-6 mb-5">
-            {STATS.map(({ value, label }) => (
-              <div key={label}>
-                <div className="text-xl font-black text-gray-900">{value}</div>
-                <div className="text-[9px] font-black text-gray-400 uppercase tracking-wider mt-0.5">{label}</div>
-              </div>
-            ))}
-          </div>
-
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2.5">
             {FEATURES.map(({ icon: Icon, text }) => (
-              <div key={text} className="flex items-center space-x-1.5 px-3.5 py-1.5 bg-white border border-gray-200 rounded-full shadow-sm">
-                <Icon className="w-3 h-3 text-[#16a34a]" />
-                <span className="text-[10px] font-bold text-gray-600">{text}</span>
+              <div key={text} className="flex items-center space-x-2 px-4 py-2 bg-white border border-gray-200 rounded-full shadow-xs">
+                <Icon className="w-3.5 h-3.5 text-[#16a34a]" />
+                <span className="text-[11px] font-bold text-gray-700">{text}</span>
               </div>
             ))}
           </div>
         </section>
 
         {/* RIGHT — Login Card */}
-        <aside className="lg:w-[42%] flex items-center justify-start px-2 sm:px-4 xl:px-6 py-6 relative overflow-hidden">
+        <aside className="lg:w-[42%] flex items-center justify-start px-4 sm:px-8 xl:px-12 py-6 relative overflow-hidden">
           <div className="hidden lg:block absolute inset-0 bg-gradient-to-bl from-gray-100/80 to-transparent pointer-events-none" />
           <div className="hidden lg:block absolute top-8 right-8 w-64 h-64 rounded-full bg-green-50 blur-3xl opacity-70 pointer-events-none" />
 
-          <div className="relative w-full max-w-sm bg-white rounded-3xl shadow-2xl shadow-gray-200/60 border border-gray-100 p-7 z-10">
+          <div className="relative w-full max-w-sm bg-white rounded-3xl shadow-2xl shadow-gray-200/60 border border-gray-100 p-8 z-10">
             <div className="absolute top-0 left-8 right-8 h-[3px] bg-gradient-to-r from-[#16a34a] via-[#22c55e] to-[#4ade80] rounded-b-full" />
 
-            <div className="mb-1">
-              <h2 className="text-lg font-black text-gray-900 tracking-tight">
+            <div className="mb-6">
+              <h2 className="text-xl font-black text-gray-900 tracking-tight">
                 Sign In
               </h2>
-              <p className="text-[11px] text-gray-400 font-semibold mt-0.5">
-                Access your Cargolytics account
+              <p className="text-xs text-gray-400 font-semibold mt-1">
+                Access your Cargolytics logistics account
               </p>
             </div>
 
-            <div className="mt-4 mb-2 flex justify-center w-full">
-              <GoogleLogin
-                onSuccess={handleGoogleSuccess}
-                onError={handleGoogleError}
-                useOneTap
-                theme="outline"
-                shape="pill"
-                size="large"
-                width="328"
-              />
-            </div>
+            {isGoogleAuthConfigured && (
+              <>
+                <div className="mb-4 flex justify-center w-full">
+                  <GoogleLogin
+                    onSuccess={handleGoogleSuccess}
+                    onError={handleGoogleError}
+                    useOneTap
+                    theme="outline"
+                    shape="pill"
+                    size="large"
+                    width="328"
+                  />
+                </div>
 
-            <div className="flex items-center gap-3 my-4">
-              <div className="flex-1 h-px bg-gray-100" />
-              <span className="text-[9px] font-black text-[#16a34a] uppercase tracking-widest">or</span>
-              <div className="flex-1 h-px bg-gray-100" />
-            </div>
-
-            <p className="text-center text-[11px] text-gray-400 font-semibold mb-5">
-              New to Cargolytics?{' '}
-              <Link to="/signup" className="text-[#16a34a] font-black hover:underline">Create an Account</Link>
-            </p>
+                <div className="flex items-center gap-3 my-4">
+                  <div className="flex-1 h-px bg-gray-100" />
+                  <span className="text-[9px] font-black text-[#16a34a] uppercase tracking-widest">or</span>
+                  <div className="flex-1 h-px bg-gray-100" />
+                </div>
+              </>
+            )}
 
             {error && (
               <div className="mb-4 flex items-start space-x-2.5 bg-red-50 border border-red-100 p-3 rounded-xl text-red-600 text-xs font-semibold">
@@ -192,58 +159,65 @@ const Login = () => {
               </div>
             )}
 
-            <form onSubmit={handleSubmit} className="space-y-3">
+            <form onSubmit={handleSubmit} className="space-y-4">
               <div>
-                <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest block mb-1">Username</label>
+                <label className="text-[10px] font-black text-gray-500 uppercase tracking-wider block mb-1.5">Username or Email</label>
                 <div className="relative group">
-                  <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-300 group-focus-within:text-[#16a34a] transition-colors" />
-                  <input type="text" value={username} onChange={e => setUsername(e.target.value)} required placeholder="Enter username…"
-                    className="w-full pl-9 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:border-[#16a34a] focus:ring-2 focus:ring-[#16a34a]/10 focus:outline-none text-gray-900 placeholder-gray-300 text-[13px] font-semibold transition-all duration-200" />
+                  <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300 group-focus-within:text-[#16a34a] transition-colors" />
+                  <input
+                    type="text"
+                    value={username}
+                    onChange={e => setUsername(e.target.value)}
+                    required
+                    placeholder="Enter your username or email…"
+                    className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:border-[#16a34a] focus:ring-2 focus:ring-[#16a34a]/10 focus:outline-none text-gray-900 placeholder-gray-400 text-xs font-semibold transition-all duration-200"
+                  />
                 </div>
               </div>
 
               <div>
-                <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest block mb-1">Password</label>
+                <label className="text-[10px] font-black text-gray-500 uppercase tracking-wider block mb-1.5">Password</label>
                 <div className="relative group">
-                  <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-300 group-focus-within:text-[#16a34a] transition-colors" />
-                  <input type="password" value={password} onChange={e => setPassword(e.target.value)} required placeholder="Enter password…"
-                    className="w-full pl-9 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:border-[#16a34a] focus:ring-2 focus:ring-[#16a34a]/10 focus:outline-none text-gray-900 placeholder-gray-300 text-[13px] font-semibold transition-all duration-200" />
+                  <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300 group-focus-within:text-[#16a34a] transition-colors" />
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={e => setPassword(e.target.value)}
+                    required
+                    placeholder="Enter your password…"
+                    className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:border-[#16a34a] focus:ring-2 focus:ring-[#16a34a]/10 focus:outline-none text-gray-900 placeholder-gray-400 text-xs font-semibold transition-all duration-200"
+                  />
                 </div>
               </div>
 
-              <button type="submit" disabled={loading}
-                className="w-full py-3 bg-[#16a34a] hover:bg-[#15803d] disabled:bg-gray-200 text-white font-black rounded-xl text-[12px] shadow-lg shadow-green-600/20 hover:shadow-green-600/30 transform hover:-translate-y-0.5 active:translate-y-0 transition-all duration-150 cursor-pointer border-none flex items-center justify-center space-x-2">
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full mt-2 py-3 bg-[#16a34a] hover:bg-[#15803d] disabled:bg-gray-200 text-white font-black rounded-xl text-xs shadow-lg shadow-green-600/20 hover:shadow-green-600/30 transform hover:-translate-y-0.5 active:translate-y-0 transition-all duration-150 cursor-pointer border-none flex items-center justify-center space-x-2"
+              >
                 {loading
-                  ? <><RotateCw className="w-3.5 h-3.5 animate-spin" /><span>Authenticating…</span></>
-                  : <><span>ACCESS PLATFORM</span><ArrowRight className="w-3.5 h-3.5" /></>}
+                  ? <><RotateCw className="w-4 h-4 animate-spin" /><span>Authenticating…</span></>
+                  : <><span>ACCESS PLATFORM</span><ArrowRight className="w-4 h-4" /></>}
               </button>
             </form>
 
-            <div className="flex items-center gap-3 my-4">
-              <div className="flex-1 h-px bg-gray-100" />
-              <span className="text-[9px] font-black text-gray-300 uppercase tracking-widest">Or Use Demo Accounts</span>
-              <div className="flex-1 h-px bg-gray-100" />
+            <div className="mt-6 pt-5 border-t border-gray-100 space-y-2 text-center">
+              <p className="text-xs text-gray-500 font-medium">
+                Shipper / Consignor?{' '}
+                <Link to="/signup" className="text-[#16a34a] font-bold hover:underline">
+                  Create Customer Account
+                </Link>
+              </p>
+              <p className="text-xs text-gray-500 font-medium">
+                Fleet & Logistics Operator?{' '}
+                <Link to="/register-logistics-company" className="text-slate-900 font-bold hover:underline">
+                  Register Logistics Company
+                </Link>
+              </p>
             </div>
 
-            <div className="grid grid-cols-3 gap-2">
-              {roles.map(({ key, label, desc, icon: Icon }) => {
-                const active = username === key;
-                return (
-                  <button key={key} type="button" onClick={() => pickRole(key)}
-                    className={`relative w-full max-w-[160px] p-2.5 rounded-xl border text-left cursor-pointer transition-all duration-200 ${
-                      active ? 'border-[#16a34a] bg-[#16a34a] shadow-md shadow-green-600/20' : 'border-gray-200 bg-gray-50 hover:border-green-300 hover:bg-green-50/40'
-                    }`}>
-                    {active && <div className="absolute top-1.5 right-1.5"><Check className="w-2.5 h-2.5 text-white/80" /></div>}
-                    <Icon className={`w-3.5 h-3.5 mb-1 ${active ? 'text-white' : 'text-gray-400'}`} />
-                    <span className={`text-[10px] font-black block leading-none ${active ? 'text-white' : 'text-gray-700'}`}>{label}</span>
-                    <span className={`text-[8px] font-semibold block mt-0.5 ${active ? 'text-white/60' : 'text-gray-400'}`}>{desc}</span>
-                  </button>
-                );
-              })}
-            </div>
-
-            <p className="text-center text-[9px] text-gray-300 font-semibold mt-5">
-              © 2026 Cargolytics · Road Logistics Intelligence
+            <p className="text-center text-[10px] text-gray-400 font-semibold mt-6">
+              © 2026 Cargolytics · Road Logistics Space Utilization
             </p>
           </div>
         </aside>

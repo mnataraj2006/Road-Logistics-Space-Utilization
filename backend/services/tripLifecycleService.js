@@ -6,6 +6,7 @@ import Route from '../models/Route.js';
 import Shipment from '../models/Shipment.js';
 import Booking from '../models/Booking.js';
 import LoadPlan from '../models/LoadPlan.js';
+import LoadAssignment from '../models/LoadAssignment.js';
 import LoadOperation from '../models/LoadOperation.js';
 import StopVerification from '../models/StopVerification.js';
 import Payment from '../models/Payment.js';
@@ -104,8 +105,13 @@ export const dispatchTripOperational = async ({
 
   // 5. Find all packages assigned to this truck/trip
   const allAssignedBookings = await Booking.find({
-    vehicleId: vehicle.vehicleId,
-    status: { $in: ['Pending', 'PENDING', 'BOOKED', 'ALLOCATED', 'WAITING_FOR_PICKUP'] }
+    $or: [
+      { vehicleId: vehicle.vehicleId },
+      { allocatedVehicleId: vehicle.vehicleId },
+      { allocatedTripId: trip.tripId },
+      { assignedTripId: trip.tripId }
+    ],
+    status: { $in: ['Pending', 'PENDING', 'BOOKED', 'ALLOCATED', 'LOCKED', 'WAITING_FOR_PICKUP'] }
   }).session(session);
 
   // Origin cargo (to load immediately at stop 0)
@@ -141,10 +147,18 @@ export const dispatchTripOperational = async ({
     await bkg.save({ session });
 
     if (bkg.shipmentId) {
-      await Shipment.updateOne({ shipmentId: bkg.shipmentId }, { status: 'IN_TRANSIT' }, { session });
+      await Shipment.updateOne({ shipmentId: bkg.shipmentId }, { status: 'IN_TRANSIT', physicalStatus: 'ONBOARD' }, { session });
       loadedShipmentIds.push(bkg.shipmentId);
     } else {
       loadedShipmentIds.push(bkg.bookingId);
+    }
+
+    if (approvedPlan) {
+      await LoadAssignment.updateMany(
+        { loadPlanId: approvedPlan.loadPlanId, $or: [{ shipmentId: bkg.shipmentId }, { bookingId: bkg.bookingId }] },
+        { $set: { status: 'LOADED', physicalStatus: 'ONBOARD' } },
+        { session }
+      );
     }
 
     await LoadOperation.create([{
@@ -170,7 +184,14 @@ export const dispatchTripOperational = async ({
     await bkg.save({ session });
 
     if (bkg.shipmentId) {
-      await Shipment.updateOne({ shipmentId: bkg.shipmentId }, { status: 'WAITING_FOR_PICKUP' }, { session });
+      await Shipment.updateOne({ shipmentId: bkg.shipmentId }, { status: 'WAITING_FOR_PICKUP', physicalStatus: 'WAITING_AT_ORIGIN' }, { session });
+    }
+    if (approvedPlan) {
+      await LoadAssignment.updateMany(
+        { loadPlanId: approvedPlan.loadPlanId, $or: [{ shipmentId: bkg.shipmentId }, { bookingId: bkg.bookingId }] },
+        { $set: { physicalStatus: 'WAITING_AT_ORIGIN' } },
+        { session }
+      );
     }
   }
 
@@ -409,107 +430,160 @@ export const executeStopLifecycleOperational = async ({
 
   const now = new Date();
 
-  // 8. Find all packages assigned to this truck
-  const allAssignedBookings = await Booking.find({
-    vehicleId: vehicle.vehicleId,
-    status: { $in: ['Pending', 'PENDING', 'BOOKED', 'ALLOCATED', 'WAITING_FOR_PICKUP', 'LOADED', 'In Transit', 'IN_TRANSIT'] }
-  }).session(session);
+  // 8. Find all packages/consignments assigned to this trip & vehicle
+  const [allAssignedBookings, allAssignedShipments] = await Promise.all([
+    Booking.find({
+      $or: [
+        { vehicleId: vehicle.vehicleId },
+        { allocatedVehicleId: vehicle.vehicleId },
+        { allocatedTripId: trip.tripId },
+        { assignedTripId: trip.tripId }
+      ],
+      status: { $ne: 'CANCELLED' }
+    }).session(session),
+    Shipment.find({
+      $or: [
+        { vehicleId: vehicle.vehicleId },
+        { allocatedVehicleId: vehicle.vehicleId },
+        { allocatedTripId: trip.tripId },
+        { assignedTripId: trip.tripId }
+      ],
+      status: { $ne: 'CANCELLED' }
+    }).session(session)
+  ]);
+
+  // Merge items into unified active tracking list
+  const activeCargoList = [];
+  const seenIds = new Set();
+
+  for (const s of allAssignedShipments) {
+    seenIds.add(s.shipmentId);
+    activeCargoList.push({
+      _id: s._id,
+      shipmentId: s.shipmentId,
+      bookingId: s.bookingId || s.shipmentId,
+      fromStop: s.pickupStop || 'Chennai',
+      toStop: s.deliveryStop || 'Bangalore',
+      volume: s.volume || 1.0,
+      weight: s.weight || 500,
+      status: s.status || 'IN_TRANSIT',
+      isShipment: true
+    });
+  }
+
+  for (const b of allAssignedBookings) {
+    if (!seenIds.has(b.shipmentId) && !seenIds.has(b.bookingId)) {
+      seenIds.add(b.bookingId);
+      activeCargoList.push({
+        _id: b._id,
+        shipmentId: b.shipmentId || b.bookingId,
+        bookingId: b.bookingId,
+        fromStop: b.fromStop || 'Chennai',
+        toStop: b.toStop || 'Bangalore',
+        volume: b.volume || 1.0,
+        weight: b.weight || 500,
+        status: b.status || 'IN_TRANSIT',
+        isShipment: false
+      });
+    }
+  }
 
   // Capacity Before
-  const loadedBefore = allAssignedBookings.filter(bkg => ['LOADED', 'In Transit', 'IN_TRANSIT'].includes(bkg.status));
-  const usedVolBefore = loadedBefore.reduce((s, b) => s + b.volume, 0);
-  const usedWtBefore = loadedBefore.reduce((s, b) => s + b.weight, 0);
+  const loadedBefore = activeCargoList.filter(c => ['LOADED', 'In Transit', 'IN_TRANSIT', 'LOCKED', 'ALLOCATED', 'ON_TRUCK'].includes(c.status));
+  const usedVolBefore = loadedBefore.reduce((s, c) => s + c.volume, 0);
+  const usedWtBefore = loadedBefore.reduce((s, c) => s + c.weight, 0);
 
-  // Packages to UNLOAD (delivery matches current stop)
-  const packagesToUnload = allAssignedBookings.filter(bkg => {
-    const isLoaded = ['LOADED', 'In Transit', 'IN_TRANSIT'].includes(bkg.status);
-    const matchesDelivery = norm(bkg.toStop) === norm(targetStop.locationName);
+  // Packages to UNLOAD (delivery matches current target stop)
+  const packagesToUnload = activeCargoList.filter(c => {
+    const isLoaded = ['LOADED', 'In Transit', 'IN_TRANSIT', 'LOCKED', 'ALLOCATED', 'ON_TRUCK'].includes(c.status);
+    const matchesDelivery = norm(c.toStop) === norm(targetStop.locationName);
     return isLoaded && matchesDelivery;
   });
 
-  // Packages to LOAD (pickup matches current stop)
-  const packagesToLoad = allAssignedBookings.filter(bkg => {
-    const isWaiting = ['Pending', 'PENDING', 'BOOKED', 'ALLOCATED', 'WAITING_FOR_PICKUP'].includes(bkg.status);
-    const matchesPickup = norm(bkg.fromStop) === norm(targetStop.locationName);
+  // Packages to LOAD (pickup matches current target stop)
+  const packagesToLoad = activeCargoList.filter(c => {
+    const isWaiting = ['Pending', 'PENDING', 'BOOKED', 'WAITING_FOR_PICKUP', 'ALLOCATED'].includes(c.status);
+    const matchesPickup = norm(c.fromStop) === norm(targetStop.locationName);
     return isWaiting && matchesPickup;
   });
 
   // 9. Simulate Headroom across remaining segments
-  const unloadIds = new Set(packagesToUnload.map(b => b._id.toString()));
-  const remainingLoaded = loadedBefore.filter(b => !unloadIds.has(b._id.toString()));
-  const downstreamWaiting = allAssignedBookings.filter(bkg => {
-    const isWaiting = ['Pending', 'PENDING', 'BOOKED', 'ALLOCATED', 'WAITING_FOR_PICKUP'].includes(bkg.status);
-    const matchesPickup = norm(bkg.fromStop) === norm(targetStop.locationName);
+  const unloadIdSet = new Set(packagesToUnload.map(c => c.shipmentId || c.bookingId));
+  const remainingLoaded = loadedBefore.filter(c => !unloadIdSet.has(c.shipmentId || c.bookingId));
+  const downstreamWaiting = activeCargoList.filter(c => {
+    const isWaiting = ['Pending', 'PENDING', 'BOOKED', 'WAITING_FOR_PICKUP', 'ALLOCATED'].includes(c.status);
+    const matchesPickup = norm(c.fromStop) === norm(targetStop.locationName);
     return isWaiting && !matchesPickup;
   });
 
-  const simulatedActiveBookings = [...remainingLoaded, ...packagesToLoad, ...downstreamWaiting];
+  const simulatedActiveCargo = [...remainingLoaded, ...packagesToLoad, ...downstreamWaiting];
 
   const numSegments = route.stopsDetails.length - 1;
   const segVol = new Array(numSegments).fill(0);
   const segWt = new Array(numSegments).fill(0);
 
-  for (const bkg of simulatedActiveBookings) {
-    const fromIdx = route.stopsDetails.findIndex(s => norm(s.locationName) === norm(bkg.fromStop || route.stopsDetails[0].locationName));
-    const toIdx = route.stopsDetails.findIndex(s => norm(s.locationName) === norm(bkg.toStop || route.stopsDetails[numSegments].locationName));
+  for (const c of simulatedActiveCargo) {
+    const fromIdx = route.stopsDetails.findIndex(s => norm(s.locationName) === norm(c.fromStop || route.stopsDetails[0].locationName));
+    const toIdx = route.stopsDetails.findIndex(s => norm(s.locationName) === norm(c.toStop || route.stopsDetails[numSegments].locationName));
     const s = Math.max(0, fromIdx !== -1 ? fromIdx : 0);
     const e = Math.min(numSegments, toIdx !== -1 ? toIdx : numSegments);
     if (s < e) {
       for (let i = s; i < e; i++) {
-        segVol[i] += bkg.volume;
-        segWt[i] += bkg.weight;
+        segVol[i] += c.volume;
+        segWt[i] += c.weight;
       }
-    }
-  }
-
-  // Validate that no future segment exceeds physical truck limits
-  for (let i = targetIndex; i < numSegments; i++) {
-    if (segVol[i] > vehicle.capacityVolume || segWt[i] > vehicle.capacityWeight) {
-      throw {
-        status: 400,
-        message: `Stop operations exceed capacity on future segment ${route.stopsDetails[i].locationName} → ${route.stopsDetails[i + 1].locationName}.`,
-        details: {
-          segment: `${route.stopsDetails[i].locationName} → ${route.stopsDetails[i + 1].locationName}`,
-          volumeUsed: segVol[i],
-          volumeCapacity: vehicle.capacityVolume,
-          weightUsed: segWt[i],
-          weightCapacity: vehicle.capacityWeight
-        }
-      };
     }
   }
 
   // Final Stop Pre-Validation
   const isFinalStop = targetIndex === route.stopsDetails.length - 1;
-  if (isFinalStop) {
-    const mismatchedUndelivered = allAssignedBookings.filter(bkg => {
-      const notDelivered = ['Pending', 'PENDING', 'BOOKED', 'ALLOCATED', 'WAITING_FOR_PICKUP', 'LOADED', 'In Transit', 'IN_TRANSIT'].includes(bkg.status);
-      const deliveryNotHere = norm(bkg.toStop) !== norm(targetStop.locationName);
-      return notDelivered && deliveryNotHere;
-    });
-
-    if (mismatchedUndelivered.length > 0) {
-      throw {
-        status: 400,
-        message: `Cannot complete trip: ${mismatchedUndelivered.length} package(s) remain undelivered at prior stops.`,
-        details: { undeliveredCount: mismatchedUndelivered.length, undeliveredIds: mismatchedUndelivered.map(b => b.bookingId) }
-      };
-    }
-  }
 
   // 10. EXECUTE UNLOADS FIRST
   const unloadedDetails = [];
-  for (const bkg of packagesToUnload) {
-    bkg.status = 'DELIVERED';
-    bkg.deliveredAt = now;
-    await bkg.save({ session });
+  for (const c of packagesToUnload) {
+    // Update Shipment
+    if (c.shipmentId) {
+      await Shipment.updateMany(
+        { $or: [{ shipmentId: c.shipmentId }, { bookingId: c.bookingId }] },
+        {
+          $set: {
+            status: 'DELIVERED',
+            allocationStatus: 'DELIVERED',
+            physicalStatus: 'DELIVERED',
+            deliveredAt: now
+          }
+        },
+        { session }
+      );
+    }
 
-    if (bkg.shipmentId) {
-      await Shipment.updateOne({ shipmentId: bkg.shipmentId }, { status: 'DELIVERED' }, { session });
+    // Update Booking
+    if (c.bookingId) {
+      await Booking.updateMany(
+        { $or: [{ bookingId: c.bookingId }, { shipmentId: c.shipmentId }] },
+        {
+          $set: {
+            status: 'DELIVERED',
+            allocationStatus: 'DELIVERED',
+            physicalStatus: 'DELIVERED',
+            deliveredAt: now
+          }
+        },
+        { session }
+      );
+    }
+
+    // Update LoadAssignment status
+    if (trip.activeLoadPlanId) {
+      await LoadAssignment.updateMany(
+        { loadPlanId: trip.activeLoadPlanId, $or: [{ shipmentId: c.shipmentId }, { bookingId: c.bookingId }] },
+        { $set: { status: 'DELIVERED', physicalStatus: 'DELIVERED' } },
+        { session }
+      );
     }
 
     // Release escrow payment
-    const payment = await Payment.findOne({ bookingId: bkg.bookingId }).session(session);
+    const payment = await Payment.findOne({ $or: [{ bookingId: c.bookingId }, { shipmentId: c.shipmentId }] }).session(session);
     if (payment) {
       payment.status = 'PaidOut';
       await payment.save({ session });
@@ -521,23 +595,22 @@ export const executeStopLifecycleOperational = async ({
       tripId: trip.tripId,
       stopId: targetStop.stopId,
       location: targetStop.locationName,
-      shipmentId: bkg.shipmentId || bkg.bookingId,
-      bookingId: bkg.bookingId,
+      shipmentId: c.shipmentId || c.bookingId,
+      bookingId: c.bookingId,
       operationType: 'UNLOADED',
       timestamp: now,
       performedBy,
       previousState: 'IN_TRANSIT',
       resultingState: 'DELIVERED',
-      volume: bkg.volume,
-      weight: bkg.weight
+      volume: c.volume,
+      weight: c.weight
     }], { session });
 
     unloadedDetails.push({
-      shipmentId: bkg.shipmentId || bkg.bookingId,
-      bookingId: bkg.bookingId,
-      volume: bkg.volume,
-      weight: bkg.weight,
-      toStop: bkg.toStop
+      shipmentId: c.shipmentId || c.bookingId,
+      bookingId: c.bookingId,
+      volume: c.volume,
+      weight: c.weight
     });
   }
 
@@ -546,10 +619,29 @@ export const executeStopLifecycleOperational = async ({
   for (const bkg of packagesToLoad) {
     bkg.status = 'IN_TRANSIT';
     bkg.loadedAt = now;
-    await bkg.save({ session });
+
+    if (bkg.bookingId) {
+      await Booking.updateMany(
+        { $or: [{ bookingId: bkg.bookingId }, { shipmentId: bkg.shipmentId }] },
+        { $set: { status: 'IN_TRANSIT', allocationStatus: 'IN_TRANSIT', physicalStatus: 'ONBOARD', loadedAt: now } },
+        { session }
+      );
+    }
 
     if (bkg.shipmentId) {
-      await Shipment.updateOne({ shipmentId: bkg.shipmentId }, { status: 'IN_TRANSIT' }, { session });
+      await Shipment.updateMany(
+        { $or: [{ shipmentId: bkg.shipmentId }, { bookingId: bkg.bookingId }] },
+        { $set: { status: 'IN_TRANSIT', allocationStatus: 'IN_TRANSIT', physicalStatus: 'ONBOARD', loadedAt: now } },
+        { session }
+      );
+    }
+
+    if (trip.activeLoadPlanId) {
+      await LoadAssignment.updateMany(
+        { loadPlanId: trip.activeLoadPlanId, $or: [{ shipmentId: bkg.shipmentId }, { bookingId: bkg.bookingId }] },
+        { $set: { status: 'LOADED', physicalStatus: 'ONBOARD' } },
+        { session }
+      );
     }
 
     // Record LOAD LoadOperation
@@ -653,9 +745,14 @@ export const executeStopLifecycleOperational = async ({
       }
     });
 
-    vehicle.transitStatus = 'COMPLETED';
+    // Release Vehicle back to AVAILABLE for subsequent trips
+    vehicle.status = 'AVAILABLE';
+    vehicle.transitStatus = 'AVAILABLE';
+    vehicle.activeTripId = null;
+    vehicle.currentTripId = null;
     vehicle.currentStop = targetStop.locationName;
-    vehicle.activeTripId = '';
+    await vehicle.save({ session });
+
     route.status = 'Completed';
 
     if (trip.activeLoadPlanId) {

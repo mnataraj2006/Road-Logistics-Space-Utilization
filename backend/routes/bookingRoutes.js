@@ -2,6 +2,8 @@ import express from 'express';
 import {
   getBookings,
   createBooking,
+  updateBooking,
+  deleteBooking,
   getBookingTrends,
   getDashboardKPIs,
   getPayments,
@@ -14,6 +16,8 @@ const router = express.Router();
 
 router.get('/', protect, getBookings);
 router.post('/', protect, createBooking);
+router.put('/:id', protect, updateBooking);
+router.delete('/:id', protect, deleteBooking);
 router.post('/bulk-update', protect, bulkUpdateBookings);
 router.get('/payments', protect, getPayments);
 router.put('/payments/:id/release', protect, admin, releasePayment); // admin only

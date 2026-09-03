@@ -74,6 +74,8 @@ graph LR
 
 ## 6. User Roles
 
+The platform enforces a streamlined **Two-Role Architecture**:
+
 ```mermaid
 graph TD
     User([Authenticated User]) --> RoleSplit{User Role}
@@ -84,19 +86,31 @@ graph TD
     Cust --> C3[Consignment Lifecycle Tracking]
     Cust --> C4[Digital Invoices & Escrow Receipts]
 
-    RoleSplit -->|Logistics Manager / Admin| Mgr[Manager Command Center]
-    Mgr --> M1[Operations Dashboard & Live Manifests]
-    Mgr --> M2[Combinatorial Load Optimizer Workbench]
-    Mgr --> M3[Optimistic Load Plan Version Approval]
-    Mgr --> M4[Live In-Transit Dynamic Re-Optimization]
-    Mgr --> M5[Tamper-Proof Audit & Unallocated Explainer]
-
-    RoleSplit -->|Carrier / Driver| Carr[Carrier Workspace]
-    Carr --> CR1[Fleet Asset Availability & Interior Specs]
-    Carr --> CR2[Assigned Route Corridor Manifests]
-    Carr --> CR3[Driver QR Checkpoint Scan Terminal]
-    Carr --> CR4[Trailer Weight Distribution Visualizer]
+    RoleSplit -->|Logistics Manager| Mgr[Logistics Manager Command Center]
+    Mgr --> M1[Operations Dashboard & Fleet Assets]
+    Mgr --> M2[Route Corridors & Trip Dispatch]
+    Mgr --> M3[Combinatorial Load Optimizer Workbench]
+    Mgr --> M4[Optimistic Load Plan Version Approval]
+    Mgr --> M5[Live Stop Arrival & Cryptographic QR Verification]
+    Mgr --> M6[Live In-Transit Dynamic Re-Optimization]
+    Mgr --> M7[Tamper-Proof Audit & Unallocated Explainer]
+    Mgr --> M8[Logistics Performance Analytics]
 ```
+
+### 1. Customer (Shipper / Exporter)
+* Requests transportation and searches available multi-stop corridor capacity.
+* Books reserved space atomically under concurrent booking contention.
+* Tracks shipments across linear route segments in real time.
+* Accesses booking manifests, digital invoices, and escrow payment ledgers.
+
+### 2. Logistics Manager (Fleet & Operations Supervisor)
+* Manages fleet vehicle specifications, gross limits, and 3D cargo-space dimensions.
+* Creates trips, assigns vehicles, and defines multi-stop transit corridors.
+* Runs combinatorial multi-stop space optimization and inspects 2D/3D load manifests.
+* Approves load plans with optimistic concurrency locking ($v1, v2, \dots$).
+* Dispatches trips, validates single-use HMAC stop tokens, and commits package unloads/loads.
+* Executes mid-route dynamic re-optimizations when capacity frees up downstream.
+* Evaluates logistics performance analytics and inspects immutable lifecycle audit ledgers.
 
 ---
 

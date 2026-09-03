@@ -67,6 +67,62 @@ const ManagerOperationsDashboard = () => {
         </div>
       </div>
 
+      {/* First-Login Onboarding Checklist (Requirement 24) */}
+      <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-emerald-950 rounded-2xl p-5 text-white shadow-md border border-slate-700/60">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-white/10 pb-4 mb-4">
+          <div>
+            <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs uppercase tracking-wider">
+              <ShieldCheck className="w-4 h-4" />
+              <span>Operator Fast-Start Checklist</span>
+            </div>
+            <h2 className="text-lg font-black text-white mt-0.5">Fleet Operator Activation Guide</h2>
+          </div>
+          <span className="text-xs text-slate-300">
+            {vehicles.length > 0 && trips.length > 0 ? '✓ Operations Live' : 'Complete setup to publish available capacity'}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-xs">
+          <div className="p-3 bg-white/10 rounded-xl border border-emerald-500/30 flex flex-col justify-between">
+            <span className="text-emerald-400 font-bold text-[11px] flex items-center gap-1">
+              <CheckCircle2 className="w-3.5 h-3.5" /> Step 1
+            </span>
+            <span className="font-bold text-white mt-1">Company Profile</span>
+            <span className="text-[10px] text-emerald-300 mt-1 font-semibold">✓ Completed</span>
+          </div>
+
+          <Link to="/manager/fleet" className="no-underline p-3 bg-white/5 hover:bg-white/10 rounded-xl border border-white/10 flex flex-col justify-between transition group">
+            <span className="text-slate-400 font-semibold text-[11px]">Step 2</span>
+            <span className="font-bold text-white mt-1 group-hover:text-emerald-300">Register First Truck</span>
+            <span className="text-[10px] text-slate-400 mt-1">{vehicles.length > 0 ? '✓ ' + vehicles.length + ' Registered' : 'Fleet Console →'}</span>
+          </Link>
+
+          <Link to="/manager/routes" className="no-underline p-3 bg-white/5 hover:bg-white/10 rounded-xl border border-white/10 flex flex-col justify-between transition group">
+            <span className="text-slate-400 font-semibold text-[11px]">Step 3</span>
+            <span className="font-bold text-white mt-1 group-hover:text-emerald-300">Configure Routes</span>
+            <span className="text-[10px] text-slate-400 mt-1">Corridor Stops →</span>
+          </Link>
+
+          <Link to="/manager/trips" className="no-underline p-3 bg-white/5 hover:bg-white/10 rounded-xl border border-white/10 flex flex-col justify-between transition group">
+            <span className="text-slate-400 font-semibold text-[11px]">Step 4</span>
+            <span className="font-bold text-white mt-1 group-hover:text-emerald-300">Create First Trip</span>
+            <span className="text-[10px] text-slate-400 mt-1">{trips.length > 0 ? '✓ ' + trips.length + ' Trips' : 'Schedule Trip →'}</span>
+          </Link>
+
+          <Link to="/manager/fleet" className="no-underline p-3 bg-white/5 hover:bg-white/10 rounded-xl border border-white/10 flex flex-col justify-between transition group">
+            <span className="text-slate-400 font-semibold text-[11px]">Step 5</span>
+            <span className="font-bold text-white mt-1 group-hover:text-emerald-300">Publish Capacity</span>
+            <span className="text-[10px] text-slate-400 mt-1">Marketplace Live →</span>
+          </Link>
+
+          <Link to="/manager/optimizer" className="no-underline p-3 bg-white/5 hover:bg-white/10 rounded-xl border border-white/10 flex flex-col justify-between transition group">
+            <span className="text-slate-400 font-semibold text-[11px]">Step 6</span>
+            <span className="font-bold text-white mt-1 group-hover:text-emerald-300">3D Optimization</span>
+            <span className="text-[10px] text-slate-400 mt-1">Run Optimizer →</span>
+          </Link>
+        </div>
+      </div>
+
       {/* Operational KPI Tiles */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="bg-white rounded-2xl border border-gray-200 p-5 shadow-xs">

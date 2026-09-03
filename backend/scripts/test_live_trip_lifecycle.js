@@ -67,7 +67,7 @@ const runLiveTripLifecycleTestSuite = async () => {
       username: shipperUsername,
       email: 'shipper@lifecycle.ai',
       password: 'password123',
-      role: 'shipper',
+      role: 'customer',
       name: 'Lifecycle Shipper'
     });
 

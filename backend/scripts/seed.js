@@ -23,30 +23,28 @@ const seedData = async () => {
     await Payment.deleteMany({});
 
     // 1. Seed Users
-    console.log('Seeding users (Shippers, Carriers, Admins)...');
+    console.log('Seeding users (Customers and Logistics Managers)...');
     const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash('admin123', salt);
+    const hashedPassword = await bcrypt.hash('password123', salt);
     
     const seededUsers = await User.create([
-      // Admin
-      { username: 'admin', email: 'admin@roadlogistics.com', password: hashedPassword, role: 'admin' },
+      // Logistics Managers (Fleet Operators)
+      { username: 'manager-ops', email: 'ops@roadlogistics.com', password: hashedPassword, role: 'logistics_manager' },
+      { username: 'carrier-safexpress', email: 'safexpress@roadlogistics.com', password: hashedPassword, role: 'logistics_manager', companyName: 'Safexpress Logistics' },
+      { username: 'carrier-vrl', email: 'vrl@roadlogistics.com', password: hashedPassword, role: 'logistics_manager', companyName: 'VRL Logistics' },
+      { username: 'carrier-bluedart', email: 'bluedart@roadlogistics.com', password: hashedPassword, role: 'logistics_manager', companyName: 'Blue Dart Freight' },
       
-      // Carriers (Logistics Providers)
-      { username: 'carrier-safexpress', email: 'safexpress@roadlogistics.com', password: hashedPassword, role: 'carrier' },
-      { username: 'carrier-vrl', email: 'vrl@roadlogistics.com', password: hashedPassword, role: 'carrier' },
-      { username: 'carrier-bluedart', email: 'bluedart@roadlogistics.com', password: hashedPassword, role: 'carrier' },
-      
-      // Shippers (Traders / Exporters)
-      { username: 'shipper-apex', email: 'apex@roadlogistics.com', password: hashedPassword, role: 'shipper' },
-      { username: 'shipper-global', email: 'global@roadlogistics.com', password: hashedPassword, role: 'shipper' },
-      { username: 'shipper-local', email: 'local@roadlogistics.com', password: hashedPassword, role: 'shipper' },
+      // Customers (Shippers / Exporters)
+      { username: 'customer-apex', email: 'apex@roadlogistics.com', password: hashedPassword, role: 'customer', companyName: 'Apex Exports' },
+      { username: 'customer-global', email: 'global@roadlogistics.com', password: hashedPassword, role: 'customer', companyName: 'Global Freight' },
+      { username: 'customer-local', email: 'local@roadlogistics.com', password: hashedPassword, role: 'customer', companyName: 'Local Traders' },
 
-      // Drivers
+      // Drivers (Operational Accounts)
       { 
         username: 'driver-arun', 
         email: 'arun@roadlogistics.com', 
         password: hashedPassword, 
-        role: 'driver', 
+        role: 'customer', 
         name: 'Arun Kumar', 
         carrierId: 'carrier-safexpress', 
         phone: '+91 98765 43210', 

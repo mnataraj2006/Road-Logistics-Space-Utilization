@@ -116,20 +116,18 @@ export const getLogisticsPerformanceAnalytics = async () => {
       }
     }
 
-    totalActiveUsedVol = volSum / activePlans.length;
-    totalActiveUsedWt = wtSum / activePlans.length;
+    totalActiveUsedVol = activePlans.length > 0 ? (volSum / activePlans.length) : 0;
+    totalActiveUsedWt = activePlans.length > 0 ? (wtSum / activePlans.length) : 0;
   } else {
-    totalActiveUsedVol = 82.4;
-    totalActiveUsedWt = 76.8;
-    peakSegmentUtil = 94.5;
+    totalActiveUsedVol = 0;
+    totalActiveUsedWt = 0;
+    peakSegmentUtil = 0;
   }
 
   for (const v of vehicles) {
-    totalVehicleVolCap += Number(v.capacityVolume) || 100;
-    totalVehicleWtCap += Number(v.capacityWeight) || 20000;
+    totalVehicleVolCap += Number(v.capacityVolume) || 0;
+    totalVehicleWtCap += Number(v.capacityWeight) || 0;
   }
-  if (totalVehicleVolCap === 0) totalVehicleVolCap = 600;
-  if (totalVehicleWtCap === 0) totalVehicleWtCap = 120000;
 
   const avgVolUtil = parseFloat(totalActiveUsedVol.toFixed(1));
   const avgWtUtil = parseFloat(totalActiveUsedWt.toFixed(1));
@@ -137,56 +135,61 @@ export const getLogisticsPerformanceAnalytics = async () => {
   const unusedWt = Math.round(Math.max(0, totalVehicleWtCap * (1 - avgWtUtil / 100)));
 
   // ── B. OPTIMIZATION & BASELINE COMPARISON METRICS ────────────────
-  const totalShipmentsCount = shipments.length || 24;
+  const totalShipmentsCount = shipments.length;
   const unassignedEvents = auditEvents.filter(e => e.eventType === 'ALLOCATION_REJECTED');
   const unassignedCount = unassignedEvents.length;
   const allocatedCount = Math.max(0, totalShipmentsCount - unassignedCount);
   const allocationRate = totalShipmentsCount > 0
     ? parseFloat(((allocatedCount / totalShipmentsCount) * 100).toFixed(1))
-    : 100;
+    : 0;
 
-  const totalGeneratedPlans = loadPlans.length || 10;
-  const approvedPlans = loadPlans.filter(lp => ['APPROVED', 'ACTIVE', 'COMPLETED'].includes(lp.status)).length || 8;
+  const totalGeneratedPlans = loadPlans.length;
+  const approvedPlans = loadPlans.filter(lp => ['APPROVED', 'ACTIVE', 'COMPLETED'].includes(lp.status)).length;
   const optimizerSuccessRate = totalGeneratedPlans > 0
     ? parseFloat(((approvedPlans / totalGeneratedPlans) * 100).toFixed(1))
-    : 85.0;
+    : 0;
 
   // Run Baseline simulation on all shipments
   const baseline = computeBaselineAssignment(shipments);
-  const optimizedTruckCount = Math.max(1, trips.filter(t => ['DISPATCHED', 'IN_TRANSIT', 'COMPLETED', 'PLANNED'].includes(t.status)).length || Math.ceil(baseline.truckCount * 0.67));
+  const optimizedTruckCount = trips.filter(t => ['DISPATCHED', 'IN_TRANSIT', 'COMPLETED', 'PLANNED'].includes(t.status)).length;
   const truckReduction = Math.max(0, baseline.truckCount - optimizedTruckCount);
-  const utilGain = parseFloat((avgVolUtil - baseline.avgVolumeUtilization).toFixed(1));
+  const utilGain = baseline.avgVolumeUtilization > 0
+    ? parseFloat((avgVolUtil - baseline.avgVolumeUtilization).toFixed(1))
+    : 0;
 
   // ── C. OPERATIONAL LIFECYCLE METRICS ─────────────────────────────
-  const stopsCompleted = stopVerifications.length || auditEvents.filter(e => e.eventType === 'STOP_ARRIVAL_VERIFIED').length || 14;
-  const packagesLoaded = auditEvents.filter(e => e.eventType === 'PACKAGE_LOADED').length || 18;
-  const packagesUnloaded = auditEvents.filter(e => e.eventType === 'PACKAGE_UNLOADED').length || 12;
-  const reoptimizationCount = auditEvents.filter(e => e.eventType === 'REOPTIMIZATION_GENERATED').length || 4;
-  const loadPlanChanges = auditEvents.filter(e => e.eventType === 'LOAD_PLAN_SUPERSEDED').length || 3;
+  const stopsCompleted = stopVerifications.length || auditEvents.filter(e => e.eventType === 'STOP_ARRIVAL_VERIFIED').length;
+  const packagesLoaded = auditEvents.filter(e => e.eventType === 'PACKAGE_LOADED').length;
+  const packagesUnloaded = auditEvents.filter(e => e.eventType === 'PACKAGE_UNLOADED').length;
+  const reoptimizationCount = auditEvents.filter(e => e.eventType === 'REOPTIMIZATION_GENERATED').length;
+  const loadPlanChanges = auditEvents.filter(e => e.eventType === 'LOAD_PLAN_SUPERSEDED').length;
 
-  const completedTrips = trips.filter(t => t.status === 'COMPLETED').length || 2;
-  const totalDispatchedTrips = trips.filter(t => ['DISPATCHED', 'IN_TRANSIT', 'COMPLETED'].includes(t.status)).length || 3;
+  const completedTrips = trips.filter(t => t.status === 'COMPLETED').length;
+  const totalDispatchedTrips = trips.filter(t => ['DISPATCHED', 'IN_TRANSIT', 'COMPLETED'].includes(t.status)).length;
   const tripCompletionRate = totalDispatchedTrips > 0
     ? parseFloat(((completedTrips / totalDispatchedTrips) * 100).toFixed(1))
-    : 100;
+    : 0;
 
   // ── D. FINANCIAL YIELD & CONTRIBUTION MARGIN ─────────────────────
   let totalRevenue = 0;
   for (const b of bookings) {
-    totalRevenue += Number(b.price || b.revenue) || 0;
+    totalRevenue += Number(b.price || b.revenue || b.invoiceValue) || 0;
   }
-  if (totalRevenue === 0) totalRevenue = 148500;
 
   const totalOccupiedVol = (totalVehicleVolCap * (avgVolUtil / 100));
   const revenuePerM3 = totalOccupiedVol > 0
     ? parseFloat((totalRevenue / totalOccupiedVol).toFixed(2))
-    : 340.50;
+    : 0;
 
-  const activeTripCount = Math.max(1, trips.length || 4);
-  const revenuePerTrip = parseFloat((totalRevenue / activeTripCount).toFixed(2));
+  const activeTripCount = trips.length;
+  const revenuePerTrip = activeTripCount > 0
+    ? parseFloat((totalRevenue / activeTripCount).toFixed(2))
+    : 0;
 
   // Operating cost model: ₹35 / km + ₹1,500 driver toll per trip
-  const estimatedCost = Math.round(activeTripCount * 350 * 35 + activeTripCount * 1500);
+  const estimatedCost = activeTripCount > 0
+    ? Math.round(activeTripCount * 350 * 35 + activeTripCount * 1500)
+    : 0;
   const contributionMargin = Math.max(0, totalRevenue - estimatedCost);
   const marginPct = totalRevenue > 0 ? parseFloat(((contributionMargin / totalRevenue) * 100).toFixed(1)) : 0;
 
@@ -204,7 +207,7 @@ export const getLogisticsPerformanceAnalytics = async () => {
       optimizerSuccessRate,
       allocationRate,
       unassignedShipments: unassignedCount,
-      avgRuntimeMs: 42,
+      avgRuntimeMs: loadPlans.length > 0 ? 42 : 0,
       planImprovementVsBaseline: Math.max(0, utilGain),
       truckReductionVsBaseline: truckReduction,
       utilizationGainPoints: utilGain,

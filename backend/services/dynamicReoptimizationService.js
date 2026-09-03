@@ -341,15 +341,20 @@ export const applyDynamicReoptimization = async ({
       if (na.shipmentId) {
         const existingShp = await Shipment.findOne({ shipmentId: na.shipmentId }).session(session);
         if (existingShp && !['IN_TRANSIT', 'LOADED', 'DELIVERED'].includes(existingShp.status)) {
+          existingShp.allocatedTripId = tripId;
+          existingShp.allocatedVehicleId = reopt.vehicleId;
           existingShp.status = 'ALLOCATED';
+          existingShp.allocationStatus = 'ALLOCATED';
           await existingShp.save({ session });
         }
       }
       if (na.bookingId) {
         const existingBkg = await Booking.findOne({ bookingId: na.bookingId }).session(session);
         if (existingBkg && !['IN_TRANSIT', 'LOADED', 'DELIVERED'].includes(existingBkg.status)) {
+          existingBkg.allocatedTripId = tripId;
           existingBkg.vehicleId = reopt.vehicleId;
           existingBkg.status = 'ALLOCATED';
+          existingBkg.allocationStatus = 'ALLOCATED';
           await existingBkg.save({ session });
         }
       }

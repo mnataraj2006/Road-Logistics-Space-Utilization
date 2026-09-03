@@ -32,47 +32,47 @@ const ManagerAnalyticsView = () => {
   }, []);
 
   const cap = data?.capacity || {
-    averageVolumeUtilization: 84.6,
-    averageWeightUtilization: 78.1,
-    peakSegmentUtilization: 96.0,
-    unusedVolume: 92.4,
-    unusedWeight: 26280,
-    totalCapacityVolume: 600,
-    totalCapacityWeight: 120000
+    averageVolumeUtilization: 0,
+    averageWeightUtilization: 0,
+    peakSegmentUtilization: 0,
+    unusedVolume: 0,
+    unusedWeight: 0,
+    totalCapacityVolume: 0,
+    totalCapacityWeight: 0
   };
 
   const opt = data?.optimization || {
-    optimizerSuccessRate: 92.5,
-    allocationRate: 96.0,
-    unassignedShipments: 1,
-    avgRuntimeMs: 38,
-    planImprovementVsBaseline: 22.6,
-    truckReductionVsBaseline: 2,
-    utilizationGainPoints: 22.6,
+    optimizerSuccessRate: 0,
+    allocationRate: 0,
+    unassignedShipments: 0,
+    avgRuntimeMs: 0,
+    planImprovementVsBaseline: 0,
+    truckReductionVsBaseline: 0,
+    utilizationGainPoints: 0,
     comparison: {
-      baseline: { truckCount: 6, averageVolumeUtilization: 62.0, label: 'Naive First-Fit LTL (Baseline)' },
-      optimized: { truckCount: 4, averageVolumeUtilization: 84.6, label: 'Multi-Stop Space Optimizer' },
-      improvement: { trucksSaved: 2, percentagePointsGain: 22.6, summary: '2 fewer trucks, +22.6 percentage-point volume gain' }
+      baseline: { truckCount: 0, averageVolumeUtilization: 0, label: 'Naive First-Fit LTL (Baseline)' },
+      optimized: { truckCount: 0, averageVolumeUtilization: 0, label: 'Multi-Stop Space Optimizer' },
+      improvement: { trucksSaved: 0, percentagePointsGain: 0, summary: '0 fewer trucks, +0 percentage-point volume gain' }
     }
   };
 
   const ops = data?.operations || {
-    stopsCompleted: 14,
-    packagesLoaded: 18,
-    packagesUnloaded: 12,
-    reoptimizationCount: 4,
-    loadPlanChanges: 3,
+    stopsCompleted: 0,
+    packagesLoaded: 0,
+    packagesUnloaded: 0,
+    reoptimizationCount: 0,
+    loadPlanChanges: 0,
     delayedOperations: 0,
-    tripCompletionRate: 100
+    tripCompletionRate: 0
   };
 
   const fin = data?.financial || {
-    totalRevenue: 148500,
-    revenuePerUtilizedM3: 292.50,
-    revenuePerTrip: 37125,
-    estimatedOperatingCost: 55000,
-    contributionMargin: 93500,
-    contributionMarginPercent: 63.0,
+    totalRevenue: 0,
+    revenuePerUtilizedM3: 0,
+    revenuePerTrip: 0,
+    estimatedOperatingCost: 0,
+    contributionMargin: 0,
+    contributionMarginPercent: 0,
     currency: 'INR'
   };
 
@@ -112,7 +112,7 @@ const ManagerAnalyticsView = () => {
             </h2>
           </div>
           <span className="px-3 py-1 bg-emerald-500/20 text-emerald-300 rounded-full text-xs font-bold border border-emerald-400/30">
-            {opt.comparison?.improvement?.summary || '2 fewer trucks, +22.6 percentage-point gain'}
+            {opt.comparison?.improvement?.summary || `${opt.comparison?.improvement?.trucksSaved ?? 0} fewer trucks, +${opt.comparison?.improvement?.percentagePointsGain ?? 0} percentage-point volume gain`}
           </span>
         </div>
 
@@ -124,14 +124,14 @@ const ManagerAnalyticsView = () => {
             </span>
             <div className="flex items-baseline gap-2">
               <span className="text-3xl font-black text-gray-200">
-                {opt.comparison?.baseline?.truckCount || 6}
+                {opt.comparison?.baseline?.truckCount ?? 0}
               </span>
               <span className="text-xs text-gray-400 font-semibold">Trucks required</span>
             </div>
             <div className="flex items-center justify-between text-xs text-gray-300 pt-1 border-t border-white/10">
               <span>Avg Volume Fill:</span>
               <strong className="text-amber-400 text-sm">
-                {opt.comparison?.baseline?.averageVolumeUtilization || 62.0}%
+                {opt.comparison?.baseline?.averageVolumeUtilization ?? 0}%
               </strong>
             </div>
           </div>
@@ -153,14 +153,14 @@ const ManagerAnalyticsView = () => {
             </span>
             <div className="flex items-baseline gap-2">
               <span className="text-3xl font-black text-emerald-400">
-                {opt.comparison?.optimized?.truckCount || 4}
+                {opt.comparison?.optimized?.truckCount ?? 0}
               </span>
               <span className="text-xs text-emerald-200 font-semibold">Trucks required</span>
             </div>
             <div className="flex items-center justify-between text-xs text-emerald-200 pt-1 border-t border-emerald-400/20">
               <span>Avg Volume Fill:</span>
               <strong className="text-emerald-300 text-sm">
-                {opt.comparison?.optimized?.averageVolumeUtilization || 84.6}%
+                {opt.comparison?.optimized?.averageVolumeUtilization ?? 0}%
               </strong>
             </div>
           </div>
@@ -171,25 +171,25 @@ const ManagerAnalyticsView = () => {
           <div className="p-3 bg-white/5 rounded-xl border border-white/10">
             <span className="text-gray-400 block text-[10px] uppercase font-bold">Fleet Savings</span>
             <span className="text-base font-black text-emerald-400">
-              {opt.comparison?.improvement?.trucksSaved || 2} Fewer Trucks
+              {opt.comparison?.improvement?.trucksSaved ?? 0} Fewer Trucks
             </span>
           </div>
           <div className="p-3 bg-white/5 rounded-xl border border-white/10">
             <span className="text-gray-400 block text-[10px] uppercase font-bold">Utilization Gain</span>
             <span className="text-base font-black text-emerald-400">
-              +{opt.comparison?.improvement?.percentagePointsGain || 22.6}% pts
+              +{opt.comparison?.improvement?.percentagePointsGain ?? 0}% pts
             </span>
           </div>
           <div className="p-3 bg-white/5 rounded-xl border border-white/10">
             <span className="text-gray-400 block text-[10px] uppercase font-bold">Optimizer Runtime</span>
             <span className="text-base font-black text-white">
-              {opt.avgRuntimeMs || 38} ms
+              {opt.avgRuntimeMs ?? 0} ms
             </span>
           </div>
           <div className="p-3 bg-white/5 rounded-xl border border-white/10">
             <span className="text-gray-400 block text-[10px] uppercase font-bold">Allocation Rate</span>
             <span className="text-base font-black text-emerald-400">
-              {opt.allocationRate || 96.0}%
+              {opt.allocationRate ?? 0}%
             </span>
           </div>
         </div>

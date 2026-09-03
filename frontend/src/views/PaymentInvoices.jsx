@@ -28,7 +28,7 @@ const PaymentInvoices = () => {
     );
   }
 
-  const isCarrier = user?.role === 'carrier';
+  const isManager = ['logistics_manager', 'admin'].includes(user?.role);
 
   return (
     <div className="space-y-6">
@@ -38,11 +38,11 @@ const PaymentInvoices = () => {
         <div className="flex items-center space-x-2 mb-1">
           <div className="h-[3px] w-5 bg-[#16a34a] rounded-full" />
           <span className="text-[10px] font-black text-[#16a34a] uppercase tracking-[0.18em]">
-            {isCarrier ? 'Carrier Portal' : 'Exporter Portal'}
+            {isManager ? 'Manager Operations' : 'Customer Portal'}
           </span>
         </div>
         <h1 className="text-2xl font-black text-gray-900 tracking-tight">
-          {isCarrier ? 'Earnings & Payout Ledger' : 'Payment Invoices & Escrow Ledger'}
+          {isManager ? 'Earnings & Payout Ledger' : 'Payment Invoices & Escrow Ledger'}
         </h1>
         <p className="text-[12px] text-gray-400 font-semibold mt-0.5">
           Platform commission splits, escrow release statuses, and carrier payouts.

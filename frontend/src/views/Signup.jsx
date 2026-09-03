@@ -9,25 +9,11 @@ import {
   BarChart3, Zap, Globe, Shield, Eye, EyeOff
 } from 'lucide-react';
 
-const NAV_LINKS = ['Platform', 'Carriers', 'Shippers', 'Analytics', 'Pricing'];
-
-const ROLE_OPTIONS = [
-  { key: 'carrier', label: 'Carrier',  subtitle: 'Logistics Provider', desc: 'List fleet capacity and earn revenue.', icon: Truck,    color: 'from-green-500 to-emerald-600' },
-  { key: 'shipper', label: 'Exporter', subtitle: 'Cargo Shipper',      desc: 'Search and book available truck space.', icon: Package, color: 'from-blue-500 to-indigo-600'   },
-];
-
-const STATS = [
-  { value: '1,500+', label: 'Shipments'   },
-  { value: '6',      label: 'Carriers'    },
-  { value: '99.3%',  label: 'ML Price R²' },
-  { value: '5',      label: 'Lanes'       },
-];
-
 const FEATURES = [
-  { icon: Zap,       text: 'ML Forecasting'  },
-  { icon: Globe,     text: 'Marketplace'     },
-  { icon: BarChart3, text: 'Fleet Analytics' },
-  { icon: Shield,    text: 'Escrow Payments' },
+  { icon: Zap,       text: 'Dynamic Optimization' },
+  { icon: Globe,     text: 'Multi-Stop Corridors' },
+  { icon: BarChart3, text: 'Space Analytics' },
+  { icon: Shield,    text: 'Escrow Settlements' },
 ];
 
 const Signup = () => {
@@ -36,7 +22,7 @@ const Signup = () => {
     email: '', 
     password: '', 
     confirmPassword: '', 
-    role: 'carrier',
+    role: 'customer',
     companyName: '',
     phone: '',
     address: ''
@@ -50,11 +36,13 @@ const Signup = () => {
   const { login, user, googleLogin } = useContext(AuthContext);
   const navigate = useNavigate();
 
+  const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+  const isGoogleAuthConfigured = !!googleClientId && googleClientId !== 'dummy-google-client-id';
+
   const handleGoogleSuccess = async (credentialResponse) => {
     setLoading(true);
     setApiError('');
-    localStorage.setItem('pendingGoogleRole', form.role); // Preserve role securely
-    const success = await googleLogin(credentialResponse.credential, form.role);
+    const success = await googleLogin(credentialResponse.credential);
     setLoading(false);
     if (success) {
       navigate('/');
@@ -79,9 +67,9 @@ const Signup = () => {
     if (!form.email.trim() || !/\S+@\S+\.\S+/.test(form.email)) errs.email = 'Valid email required.';
     if (!form.password || form.password.length < 6) errs.password = 'Min 6 characters.';
     if (form.confirmPassword !== form.password) errs.confirmPassword = 'Passwords do not match.';
-    if (!form.companyName.trim()) errs.companyName = 'Company name is required.';
+    if (!form.companyName.trim()) errs.companyName = 'Company / Business name is required.';
     if (!form.phone.trim()) errs.phone = 'Phone number is required.';
-    if (!form.address.trim()) errs.address = 'Address/Location is required.';
+    if (!form.address.trim()) errs.address = 'Business address is required.';
     return errs;
   };
 
@@ -96,51 +84,47 @@ const Signup = () => {
         username: form.username.trim(), 
         email: form.email.trim(), 
         password: form.password, 
-        role: form.role,
+        role: 'customer',
         companyName: form.companyName.trim(),
         phone: form.phone.trim(),
         address: form.address.trim()
       });
       const ok = await login(form.username.trim(), form.password);
-      if (ok) navigate('/');
+      if (ok) {
+        navigate('/');
+      } else {
+        navigate('/login');
+      }
     } catch (err) {
-      setApiError(err?.response?.data?.message || 'Registration failed. Please try again.');
+      setApiError(err.response?.data?.message || 'Registration failed. Please verify your details.');
     } finally {
       setLoading(false);
     }
   };
 
-  const inputClass = (key) =>
-    `w-full pl-9 pr-4 py-2 bg-gray-50 border rounded-xl focus:ring-2 focus:ring-[#16a34a]/10 focus:outline-none text-gray-900 placeholder-gray-300 text-[12px] font-semibold transition-all duration-200 ${
-      fieldErrors[key] ? 'border-red-300 bg-red-50' : 'border-gray-200 focus:border-[#16a34a]'
-    }`;
+  const inputClass = (key) => `w-full px-3 py-2 text-xs font-semibold rounded-xl border outline-none transition-all duration-150 ${
+    fieldErrors[key] ? 'border-red-400 bg-red-50/50 text-red-900' : 'border-gray-200 bg-gray-50 focus:border-[#16a34a] focus:bg-white text-gray-800'
+  }`;
 
   return (
-    <div
-      className="h-screen flex flex-col overflow-hidden"
-      style={{ fontFamily: "'Inter', system-ui, sans-serif", background: '#f8fafc' }}
-    >
+    <div className="h-screen w-screen flex flex-col bg-[#fcfdfd] overflow-hidden select-none" style={{ fontFamily: "'Inter', sans-serif" }}>
 
-      {/* ── NAV ───────────────────────────────────────── */}
-      <header className="shrink-0 w-full flex items-center justify-between px-8 sm:px-14 py-4 bg-white border-b border-gray-100 z-20">
-        <div className="flex items-center space-x-3">
-          <div className="w-8 h-8 bg-[#16a34a] rounded-lg flex items-center justify-center shadow-md shadow-green-600/30">
+      {/* ── HEADER ─────────────────────────────────────── */}
+      <header className="h-14 border-b border-gray-100 flex items-center justify-between px-6 sm:px-12 bg-white/80 backdrop-blur-md shrink-0 z-20">
+        <div className="flex items-center space-x-2.5">
+          <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#16a34a] to-[#22c55e] flex items-center justify-center shadow-md shadow-green-600/20">
             <Truck className="w-4 h-4 text-white" />
           </div>
-          <div className="leading-none">
-            <span className="text-base font-black text-gray-900 tracking-tight block">Cargolytics</span>
-            <span className="text-[8px] font-black text-[#16a34a] uppercase tracking-[0.18em] block">Road Logistics</span>
+          <div>
+            <span className="text-[13px] font-black text-gray-900 tracking-tight leading-none block">Cargolytics</span>
+            <span className="text-[9px] font-black text-[#16a34a] uppercase tracking-[0.18em] leading-none block">Road Logistics</span>
           </div>
         </div>
 
-        <nav className="hidden md:flex items-center space-x-6">
-          {NAV_LINKS.map(l => (
-            <span key={l} className="text-[12px] font-semibold text-gray-500 hover:text-gray-900 cursor-pointer transition-colors">{l}</span>
-          ))}
-        </nav>
-
-        <div className="flex items-center space-x-3">
-          <Link to="/login" className="no-underline hidden sm:block text-[12px] font-bold text-gray-500 hover:text-gray-800 transition-colors">Sign In</Link>
+        <div className="flex items-center space-x-4">
+          <Link to="/login" className="no-underline text-[12px] font-bold text-gray-600 hover:text-gray-900 transition-colors">
+            Sign In
+          </Link>
           <div className="flex items-center space-x-1.5 px-4 py-2 bg-[#16a34a] text-white text-[12px] font-black rounded-full shadow-md shadow-green-600/20 cursor-default border-none">
             <span>Get Started</span><ArrowRight className="w-3 h-3" />
           </div>
@@ -156,46 +140,22 @@ const Signup = () => {
 
           <div className="flex items-center space-x-2 mb-3">
             <div className="h-[3px] w-6 bg-[#16a34a] rounded-full" />
-            <span className="text-[10px] font-black text-[#16a34a] uppercase tracking-[0.2em]">Join the Platform</span>
+            <span className="text-[10px] font-black text-[#16a34a] uppercase tracking-[0.2em]">Customer Registration</span>
           </div>
 
           <h1 className="text-4xl sm:text-5xl font-black text-gray-900 leading-[0.95] tracking-tight mb-3">
-            BUILD YOUR<br />LOGISTICS<br />
-            <span className="text-[#16a34a]">NETWORK.</span>
+            SEARCH &amp; BOOK<br />TRUCK SPACE<br />
+            <span className="text-[#16a34a]">INSTANTLY.</span>
           </h1>
 
-          <p className="text-gray-500 text-[12px] font-medium leading-relaxed max-w-md mb-5">
-            Register as a Carrier to list your fleet, or as an Exporter to discover and book available cargo space across active route lanes.
+          <p className="text-gray-500 text-[12px] font-medium leading-relaxed max-w-md mb-6">
+            Join Cargolytics to discover available volumetric and weight capacity on active freight routes, book multi-stop consignments, and track deliveries end-to-end.
           </p>
-
-          {/* Role preview cards */}
-          <div className="grid grid-cols-2 gap-3 mb-5 max-w-md">
-            {ROLE_OPTIONS.map(({ key, label, subtitle, desc, icon: Icon, color }) => (
-              <div key={key} className="bg-white border border-gray-200 rounded-xl p-3 shadow-sm">
-                <div className={`w-7 h-7 rounded-lg bg-gradient-to-br ${color} flex items-center justify-center mb-2 shadow-sm`}>
-                  <Icon className="w-3.5 h-3.5 text-white" />
-                </div>
-                <div className="text-[11px] font-black text-gray-900">{label}</div>
-                <div className="text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1">{subtitle}</div>
-                <p className="text-[10px] text-gray-500 font-medium leading-snug">{desc}</p>
-              </div>
-            ))}
-          </div>
-
-          {/* Stats */}
-          <div className="flex flex-wrap gap-5 mb-4">
-            {STATS.map(({ value, label }) => (
-              <div key={label}>
-                <div className="text-lg font-black text-gray-900">{value}</div>
-                <div className="text-[9px] font-black text-gray-400 uppercase tracking-wider mt-0.5">{label}</div>
-              </div>
-            ))}
-          </div>
 
           {/* Feature pills */}
           <div className="flex flex-wrap gap-2">
             {FEATURES.map(({ icon: Icon, text }) => (
-              <div key={text} className="flex items-center space-x-1.5 px-3 py-1.5 bg-white border border-gray-200 rounded-full shadow-sm">
+              <div key={text} className="flex items-center space-x-1.5 px-3 py-1.5 bg-white border border-gray-200 rounded-full shadow-xs">
                 <Icon className="w-3 h-3 text-[#16a34a]" />
                 <span className="text-[10px] font-bold text-gray-600">{text}</span>
               </div>
@@ -214,52 +174,39 @@ const Signup = () => {
             {loading ? (
               <div className="flex flex-col items-center justify-center py-12 space-y-4">
                 <RotateCw className="w-8 h-8 text-[#16a34a] animate-spin" />
-                <span className="text-[12px] font-black text-gray-500 uppercase tracking-widest">Connecting to Google...</span>
+                <span className="text-[12px] font-black text-gray-500 uppercase tracking-widest">Processing...</span>
               </div>
             ) : (
               <div>
                 {/* Header */}
                 <div className="flex items-center justify-between mb-4">
                   <div>
-                    <h2 className="text-lg font-black text-gray-900 tracking-tight">Create Account</h2>
-                    <p className="text-[11px] text-gray-400 font-semibold mt-0.5">Join Cargolytics as a Carrier or Exporter</p>
+                    <h2 className="text-lg font-black text-gray-900 tracking-tight">Create Customer Account</h2>
+                    <p className="text-[11px] text-gray-400 font-semibold mt-0.5">Book freight space across active corridors</p>
                   </div>
                 </div>
 
-                {/* Role Selector */}
-                <div className="grid grid-cols-2 gap-2 mb-4">
-                  {ROLE_OPTIONS.map(({ key, label, icon: Icon }) => {
-                    const active = form.role === key;
-                    return (
-                      <button key={key} type="button" onClick={() => setForm(f => ({ ...f, role: key }))}
-                        className={`flex items-center space-x-2 p-2.5 rounded-xl border-2 cursor-pointer transition-all duration-200 ${
-                          active ? 'border-[#16a34a] bg-[#16a34a]' : 'border-gray-200 bg-gray-50 hover:border-green-200 hover:bg-green-50/50'
-                        }`}>
-                        <Icon className={`w-3.5 h-3.5 shrink-0 ${active ? 'text-white' : 'text-gray-400'}`} />
-                        <span className={`text-[12px] font-black ${active ? 'text-white' : 'text-gray-800'}`}>{label}</span>
-                        {active && <Check className="w-3 h-3 text-white ml-auto shrink-0" />}
-                      </button>
-                    );
-                  })}
-                </div>
+                {isGoogleAuthConfigured && (
+                  <>
+                    <div className="mb-4 flex justify-center w-full">
+                      <GoogleLogin
+                        onSuccess={handleGoogleSuccess}
+                        onError={handleGoogleError}
+                        useOneTap
+                        theme="outline"
+                        shape="pill"
+                        size="large"
+                        width="328"
+                      />
+                    </div>
 
-                <div className="mb-4 flex justify-center w-full">
-                  <GoogleLogin
-                    onSuccess={handleGoogleSuccess}
-                    onError={handleGoogleError}
-                    useOneTap
-                    theme="outline"
-                    shape="pill"
-                    size="large"
-                    width="328"
-                  />
-                </div>
-
-                <div className="flex items-center gap-3 my-3">
-                  <div className="flex-1 h-px bg-gray-100" />
-                  <span className="text-[9px] font-black text-gray-300 uppercase tracking-widest">or register traditionally</span>
-                  <div className="flex-1 h-px bg-gray-100" />
-                </div>
+                    <div className="flex items-center gap-3 my-3">
+                      <div className="flex-1 h-px bg-gray-100" />
+                      <span className="text-[9px] font-black text-gray-300 uppercase tracking-widest">or register traditionally</span>
+                      <div className="flex-1 h-px bg-gray-100" />
+                    </div>
+                  </>
+                )}
 
                 {/* API Error */}
                 {apiError && (
@@ -311,10 +258,10 @@ const Signup = () => {
                   {/* Address / Location */}
                   <div>
                     <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest block mb-1">
-                      {form.role === 'carrier' ? 'Base Location' : 'Business Address'}
+                      Business Address
                     </label>
                     <div className="relative group">
-                      <input type="text" value={form.address} onChange={set('address')} placeholder={form.role === 'carrier' ? 'Office / operating base location...' : 'Office / business address...'} className={inputClass('address')} />
+                      <input type="text" value={form.address} onChange={set('address')} placeholder="Office / business address..." className={inputClass('address')} />
                     </div>
                     {fieldErrors.address && <p className="text-[9px] text-red-500 font-semibold mt-0.5">{fieldErrors.address}</p>}
                   </div>
@@ -361,10 +308,16 @@ const Signup = () => {
                   <span className="text-[9px] font-black text-gray-300 uppercase tracking-widest">or</span>
                   <div className="flex-1 h-px bg-gray-100" />
                 </div>
-                <p className="text-center text-[11px] text-gray-400 font-semibold">
-                  Already have an account?{' '}
-                  <Link to="/login" className="text-[#16a34a] font-black hover:underline">Sign In</Link>
-                </p>
+                <div className="text-center text-[11px] text-gray-400 font-semibold space-y-1">
+                  <div>
+                    Already have an account?{' '}
+                    <Link to="/login" className="text-[#16a34a] font-black hover:underline">Sign In</Link>
+                  </div>
+                  <div className="pt-2">
+                    Are you a Logistics Carrier / Operator?{' '}
+                    <Link to="/register-logistics-company" className="text-slate-900 font-black hover:underline">Register Company</Link>
+                  </div>
+                </div>
 
                 <p className="text-center text-[9px] text-gray-300 font-semibold mt-4">
                   © 2026 Cargolytics · Road Logistics Intelligence

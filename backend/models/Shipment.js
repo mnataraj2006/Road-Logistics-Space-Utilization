@@ -14,11 +14,26 @@ const shipmentSchema = new mongoose.Schema({
     required: true,
     index: true
   },
+  customerId: {
+    type: String,
+    trim: true
+  },
   shipperId: {
     type: String,
     required: true,
     trim: true,
     index: true
+  },
+  organizationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'LogisticsCompany',
+    required: false,
+    index: true
+  },
+  logisticsCompanyName: {
+    type: String,
+    trim: true,
+    default: ''
   },
   cargoDescription: {
     type: String,
@@ -101,14 +116,79 @@ const shipmentSchema = new mongoose.Schema({
       'PENDING',
       'BOOKED',
       'ALLOCATED',
+      'LOCKED',
       'WAITING_FOR_PICKUP',
+      'WAITING_AT_ORIGIN',
+      'READY_TO_LOAD',
       'LOADED',
+      'ONBOARD',
       'IN_TRANSIT',
       'DELIVERED',
       'CANCELLED'
     ],
     default: 'PENDING',
     index: true
+  },
+  allocationStatus: {
+    type: String,
+    enum: [
+      'AVAILABLE_FOR_OPTIMIZATION',
+      'SELECTED_FOR_OPTIMIZATION',
+      'OPTIMIZED',
+      'ALLOCATED',
+      'LOCKED',
+      'READY_TO_LOAD',
+      'WAITING_AT_ORIGIN',
+      'LOADED',
+      'ONBOARD',
+      'DELIVERED',
+      'CANCELLED'
+    ],
+    default: 'AVAILABLE_FOR_OPTIMIZATION',
+    index: true
+  },
+  physicalStatus: {
+    type: String,
+    enum: [
+      'WAITING_AT_ORIGIN',
+      'READY_TO_LOAD',
+      'ONBOARD',
+      'DELIVERED',
+      'CANCELLED'
+    ],
+    default: 'WAITING_AT_ORIGIN',
+    index: true
+  },
+  isLocked: {
+    type: Boolean,
+    default: false,
+    index: true
+  },
+  lockedAt: {
+    type: Date,
+    default: null
+  },
+  allocatedTripId: {
+    type: String,
+    trim: true,
+    default: null,
+    index: true
+  },
+  allocatedLoadPlanId: {
+    type: String,
+    trim: true,
+    default: null,
+    index: true
+  },
+  allocatedVehicleId: {
+    type: String,
+    trim: true,
+    default: null,
+    index: true
+  },
+  allocatedAt: {
+    type: Date,
+    default: null
   },
   invoiceNumber: {
     type: String,
@@ -125,6 +205,7 @@ const shipmentSchema = new mongoose.Schema({
 
 shipmentSchema.index({ customer: 1, requestedDate: -1 });
 shipmentSchema.index({ pickupStop: 1, deliveryStop: 1, status: 1 });
+shipmentSchema.index({ allocationStatus: 1, isLocked: 1, allocatedTripId: 1 });
 
 const Shipment = mongoose.model('Shipment', shipmentSchema);
 export default Shipment;

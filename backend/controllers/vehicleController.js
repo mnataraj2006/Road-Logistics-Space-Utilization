@@ -3,6 +3,7 @@ import Booking from '../models/Booking.js';
 import Route from '../models/Route.js';
 import Payment from '../models/Payment.js';
 import User from '../models/User.js';
+import { getTenantFilter } from '../middleware/auth.js';
 
 // Helper to dynamically calculate and update the transit state of a vehicle based on elapsed time since tripStartedAt
 const updateLiveTransitState = async (vehicle) => {
@@ -260,37 +261,106 @@ const updateLiveTransitState = async (vehicle) => {
   }
 };
 
-// @desc    Get all vehicles
+// @desc    Get all vehicles (scoped to tenant)
 // @route   GET /api/vehicles
 // @access  Private
 export const getVehicles = async (req, res) => {
   try {
     let filter = {};
-    if (req.user && req.user.role === 'carrier') {
-      filter.carrierId = req.user.username;
+    if (req.user && (req.user.role === 'logistics_manager' || req.user.role === 'carrier')) {
+      const tenant = getTenantFilter(req.user);
+      filter = {
+        $or: [
+          tenant,
+          { carrierId: { $in: [null, '', 'CARRIER', 'UNASSIGNED', req.user.username] } },
+          { carrier: { $in: [null, req.user._id] } }
+        ]
+      };
     }
-    const vehicles = await Vehicle.find(filter);
+    const vehicles = await Vehicle.find(filter).sort({ createdAt: -1 });
+
+    // Authoritative active trip reconciliation
+    const VehicleModel = (await import('../models/Vehicle.js')).default;
+    const TripModel = (await import('../models/Trip.js')).default;
+
+    const vehicleIds = vehicles.map(v => v.vehicleId);
+    const activeTrips = await TripModel.find({
+      vehicleId: { $in: vehicleIds },
+      status: { $in: ['PLANNED', 'READY_FOR_DISPATCH', 'DISPATCHED', 'IN_TRANSIT', 'AT_STOP'] }
+    }).lean();
+    const activeTripMap = new Map(activeTrips.map(t => [t.vehicleId, t]));
+
+    const reconciledVehicles = [];
     for (let vehicle of vehicles) {
-      await updateLiveTransitState(vehicle);
+      const trip = activeTripMap.get(vehicle.vehicleId);
+      let needsSave = false;
+
+      if (vehicle.status === 'In Maintenance' || vehicle.status === 'MAINTENANCE') {
+        vehicle.status = 'MAINTENANCE';
+        vehicle.transitStatus = 'MAINTENANCE';
+      } else if (vehicle.status === 'Out of Service' || vehicle.status === 'INACTIVE') {
+        vehicle.status = 'INACTIVE';
+        vehicle.transitStatus = 'INACTIVE';
+      } else if (trip) {
+        if (['PLANNED', 'READY_FOR_DISPATCH'].includes(trip.status)) {
+          if (vehicle.status !== 'ASSIGNED' || vehicle.transitStatus !== 'ASSIGNED' || vehicle.activeTripId !== trip.tripId) {
+            vehicle.status = 'ASSIGNED';
+            vehicle.transitStatus = 'ASSIGNED';
+            vehicle.activeTripId = trip.tripId;
+            vehicle.currentTripId = trip.tripId;
+            needsSave = true;
+          }
+        } else if (['DISPATCHED', 'IN_TRANSIT', 'AT_STOP'].includes(trip.status)) {
+          if (vehicle.status !== 'IN_TRANSIT' || vehicle.transitStatus !== 'IN_TRANSIT' || vehicle.activeTripId !== trip.tripId) {
+            vehicle.status = 'IN_TRANSIT';
+            vehicle.transitStatus = 'IN_TRANSIT';
+            vehicle.activeTripId = trip.tripId;
+            vehicle.currentTripId = trip.tripId;
+            needsSave = true;
+          }
+        }
+      } else {
+        // No active trip -> truck is AVAILABLE for new trips!
+        if (vehicle.status !== 'AVAILABLE') {
+          vehicle.status = 'AVAILABLE';
+          needsSave = true;
+        }
+        if (vehicle.transitStatus !== 'AVAILABLE') {
+          vehicle.transitStatus = 'AVAILABLE';
+          needsSave = true;
+        }
+        if (vehicle.activeTripId || vehicle.currentTripId) {
+          vehicle.activeTripId = null;
+          vehicle.currentTripId = null;
+          needsSave = true;
+        }
+      }
+
+      if (needsSave) {
+        await vehicle.save();
+      }
+      reconciledVehicles.push(vehicle);
     }
-    res.json(vehicles);
+
+    res.json(reconciledVehicles);
   } catch (error) {
+    console.error('getVehicles error:', error);
     res.status(500).json({ message: error.message });
   }
 };
 
-// @desc    Get vehicle by ID
+// @desc    Get vehicle by ID (scoped to tenant)
 // @route   GET /api/vehicles/:id
 // @access  Private
 export const getVehicleById = async (req, res) => {
   try {
-    const vehicle = await Vehicle.findOne({ vehicleId: req.params.id });
-    if (!vehicle) {
-      return res.status(404).json({ message: 'Vehicle not found' });
+    let filter = { vehicleId: req.params.id };
+    if (req.user && (req.user.role === 'logistics_manager' || req.user.role === 'carrier')) {
+      filter = { $and: [{ vehicleId: req.params.id }, getTenantFilter(req.user)] };
     }
-    // Access validation for carriers
-    if (req.user && req.user.role === 'carrier' && vehicle.carrierId !== req.user.username) {
-      return res.status(403).json({ message: 'Access denied to this vehicle resource' });
+    const vehicle = await Vehicle.findOne(filter);
+    if (!vehicle) {
+      return res.status(404).json({ message: 'Vehicle not found or not authorized.' });
     }
     await updateLiveTransitState(vehicle);
     res.json(vehicle);
@@ -305,8 +375,8 @@ export const getVehicleById = async (req, res) => {
 export const getVehicleUtilization = async (req, res) => {
   try {
     let filter = { status: 'Active' };
-    if (req.user && req.user.role === 'carrier') {
-      filter.carrierId = req.user.username;
+    if (req.user && req.user.role === 'logistics_manager' && req.user.carrierId) {
+      filter.carrierId = req.user.carrierId;
     }
     const vehicles = await Vehicle.find(filter);
     for (let vehicle of vehicles) {
@@ -391,16 +461,46 @@ export const getVehicleUtilization = async (req, res) => {
 // @route   POST /api/vehicles
 // @access  Private
 export const createVehicle = async (req, res) => {
-  const { vehicleId, type, capacityVolume, capacityWeight, status, routeLane, ratePerCbm, ratePerKg, baseLocation, assignedDriverId } = req.body;
+  const {
+    vehicleId,
+    type,
+    capacityVolume,
+    capacityWeight,
+    dimensions,
+    status,
+    routeLane,
+    ratePerCbm,
+    ratePerKg,
+    baseLocation,
+    assignedDriverId
+  } = req.body;
 
   try {
-    const exists = await Vehicle.findOne({ vehicleId });
+    const exists = await Vehicle.findOne({ vehicleId: vehicleId?.trim()?.toUpperCase() });
     if (exists) {
-      return res.status(400).json({ message: 'Vehicle already exists' });
+      return res.status(400).json({ message: 'Vehicle with this identifier already exists.' });
     }
 
-    const carrier = req.body.carrier || req.user._id;
-    const carrierId = req.body.carrierId || req.user.username;
+    const carrier = req.body.carrier || req.user?._id;
+    const carrierId = req.body.carrierId || req.user?.username || String(req.user?._id || '');
+    const organizationId = req.user?.organizationId || req.body.organizationId || null;
+    const logisticsCompanyName = req.user?.companyName || req.body.logisticsCompanyName || '';
+
+    // Calculate dimensions from input or preset
+    const length = Number(dimensions?.length) || (type?.includes('14') ? 4.3 : type?.includes('17') ? 5.2 : type?.includes('20') ? 6.1 : type?.includes('32') ? 9.8 : 13.6);
+    const width = Number(dimensions?.width) || 2.45;
+    const height = Number(dimensions?.height) || 2.8;
+
+    if (length <= 0 || width <= 0 || height <= 0) {
+      return res.status(400).json({ message: 'Truck interior dimensions (Length, Width, Height) must be greater than 0.' });
+    }
+
+    const computedVolume = Number(capacityVolume) || parseFloat((length * width * height).toFixed(2));
+    const computedWeight = Number(capacityWeight) || 20000;
+
+    if (computedWeight <= 0) {
+      return res.status(400).json({ message: 'Payload capacity weight must be greater than 0.' });
+    }
 
     // Validate driver if provided
     if (assignedDriverId) {
@@ -419,11 +519,18 @@ export const createVehicle = async (req, res) => {
     }
 
     const vehicle = new Vehicle({
-      vehicleId,
-      type,
-      capacityVolume,
-      capacityWeight,
+      vehicleId: vehicleId.trim().toUpperCase(),
+      type: type || 'Heavy Truck',
+      capacityVolume: computedVolume,
+      capacityWeight: computedWeight,
+      dimensions: {
+        length,
+        width,
+        height
+      },
       status: status || 'Active',
+      organizationId,
+      logisticsCompanyName,
       carrier,
       carrierId,
       routeLane: routeLane || '',
@@ -440,33 +547,54 @@ export const createVehicle = async (req, res) => {
   }
 };
 
-// @desc    Delete a vehicle
+// @desc    Delete a vehicle asset
 // @route   DELETE /api/vehicles/:id
-// @access  Private
+// @access  Private (Logistics Manager)
 export const deleteVehicle = async (req, res) => {
   try {
     const vehicle = await Vehicle.findOne({ vehicleId: req.params.id });
     if (!vehicle) {
-      return res.status(404).json({ message: 'Vehicle not found' });
+      return res.status(404).json({ success: false, message: `Vehicle ${req.params.id} not found.` });
     }
     
-    // Validate carrier owns the resource
-    if (req.user && req.user.role === 'carrier' && vehicle.carrierId !== req.user.username) {
-      return res.status(403).json({ message: 'Access denied' });
+    // Safety check: Cannot delete truck if currently in transit on an active trip
+    const TripModel = (await import('../models/Trip.js')).default;
+    const activeTrip = await TripModel.findOne({
+      vehicleId: vehicle.vehicleId,
+      status: { $in: ['DISPATCHED', 'IN_TRANSIT', 'AT_STOP'] }
+    });
+
+    if (activeTrip) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot delete truck ${vehicle.vehicleId}: It is currently IN_TRANSIT on Trip ${activeTrip.tripId}. Please complete or cancel the trip first.`
+      });
     }
 
     await Vehicle.deleteOne({ vehicleId: req.params.id });
-    res.json({ message: 'Vehicle removed successfully' });
+    res.json({ success: true, message: `Truck ${vehicle.vehicleId} permanently removed from Fleet Assets.` });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error('deleteVehicle error:', error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
 // @desc    Update a vehicle
 // @route   PUT /api/vehicles/:id
-// @access  Private
+// @access  Private (Logistics Manager)
 export const updateVehicle = async (req, res) => {
-  const { type, capacityVolume, capacityWeight, status, routeLane, ratePerCbm, ratePerKg, baseLocation, assignedDriverId } = req.body;
+  const {
+    type,
+    dimensions,
+    capacityVolume,
+    capacityWeight,
+    status,
+    routeLane,
+    ratePerCbm,
+    ratePerKg,
+    baseLocation,
+    assignedDriverId
+  } = req.body;
 
   try {
     const vehicle = await Vehicle.findOne({ vehicleId: req.params.id });
@@ -474,17 +602,17 @@ export const updateVehicle = async (req, res) => {
       return res.status(404).json({ message: 'Vehicle not found' });
     }
 
-    // Access validation for carriers
-    if (req.user && req.user.role === 'carrier' && vehicle.carrierId !== req.user.username) {
-      return res.status(403).json({ message: 'Access denied' });
+    // Access validation for managers
+    if (req.user && req.user.role !== 'logistics_manager' && req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Access denied: Only logistics managers can modify vehicles' });
     }
 
     // Validate driver if provided
     if (assignedDriverId !== undefined) {
       if (assignedDriverId) {
-        const driver = await User.findOne({ username: assignedDriverId, role: 'driver', carrierId: vehicle.carrierId });
+        const driver = await User.findOne({ username: assignedDriverId });
         if (!driver) {
-          return res.status(400).json({ message: 'Driver not found or does not belong to your carrier account.' });
+          return res.status(400).json({ message: 'Driver record not found.' });
         }
         if (driver.driverStatus === 'INACTIVE') {
           return res.status(400).json({ message: 'This driver account is currently inactive.' });
@@ -501,8 +629,29 @@ export const updateVehicle = async (req, res) => {
     }
 
     if (type !== undefined) vehicle.type = type;
-    if (capacityVolume !== undefined) vehicle.capacityVolume = Number(capacityVolume);
-    if (capacityWeight !== undefined) vehicle.capacityWeight = Number(capacityWeight);
+    
+    // Update dimensions and recompute volume
+    if (dimensions && typeof dimensions === 'object') {
+      const len = Number(dimensions.length);
+      const wid = Number(dimensions.width);
+      const hgt = Number(dimensions.height);
+      if (len <= 0 || wid <= 0 || hgt <= 0) {
+        return res.status(400).json({ message: 'Vehicle dimensions (length, width, height) must be positive numbers.' });
+      }
+      vehicle.dimensions = { length: len, width: wid, height: hgt };
+      vehicle.capacityVolume = capacityVolume !== undefined && Number(capacityVolume) > 0
+        ? Number(capacityVolume)
+        : parseFloat((len * wid * hgt).toFixed(2));
+    } else if (capacityVolume !== undefined) {
+      vehicle.capacityVolume = Number(capacityVolume);
+    }
+
+    if (capacityWeight !== undefined) {
+      const wt = Number(capacityWeight);
+      if (wt <= 0) return res.status(400).json({ message: 'Payload capacity weight must be greater than 0.' });
+      vehicle.capacityWeight = wt;
+    }
+
     if (status !== undefined) vehicle.status = status;
     if (routeLane !== undefined) vehicle.routeLane = routeLane;
     if (baseLocation !== undefined) vehicle.baseLocation = baseLocation;
@@ -510,6 +659,26 @@ export const updateVehicle = async (req, res) => {
     if (ratePerKg !== undefined) vehicle.ratePerKg = Number(ratePerKg);
 
     const updatedVehicle = await vehicle.save();
+
+    // Synchronize dimensions to all PLANNED trips using this vehicle
+    const Trip = (await import('../models/Trip.js')).default;
+    await Trip.updateMany(
+      { vehicleId: vehicle.vehicleId, status: { $in: ['PLANNED', 'READY_FOR_DISPATCH'] } },
+      {
+        $set: {
+          'vehicleSnapshot.interiorLength': vehicle.dimensions.length,
+          'vehicleSnapshot.interiorWidth': vehicle.dimensions.width,
+          'vehicleSnapshot.interiorHeight': vehicle.dimensions.height,
+          'vehicleSnapshot.capacityVolume': vehicle.capacityVolume,
+          'vehicleSnapshot.capacityWeight': vehicle.capacityWeight,
+          'vehicleSnapshot.dimensions': vehicle.dimensions,
+          'vehicleSnapshot.ratePerCbm': vehicle.ratePerCbm,
+          'vehicleSnapshot.ratePerKg': vehicle.ratePerKg,
+          'vehicleSnapshot.type': vehicle.type
+        }
+      }
+    );
+
     res.json(updatedVehicle);
   } catch (error) {
     res.status(400).json({ message: error.message });
@@ -518,7 +687,7 @@ export const updateVehicle = async (req, res) => {
 
 // @desc    Update vehicle transit state and handle cargo unloading
 // @route   POST /api/vehicles/:id/transit-state
-// @access  Private
+// @access  Private (Logistics Manager)
 export const updateVehicleTransitState = async (req, res) => {
   const { action, stopName, routeIndex } = req.body;
   const vehicleId = req.params.id;
@@ -527,11 +696,11 @@ export const updateVehicleTransitState = async (req, res) => {
     const vehicle = await Vehicle.findOne({ vehicleId });
     if (!vehicle) return res.status(404).json({ message: 'Vehicle not found' });
 
-    // Auth check: Carrier who owns it OR Driver who is assigned to it
-    const isOwner = req.user && req.user.role === 'carrier' && vehicle.carrierId === req.user.username;
-    const isAssignedDriver = req.user && req.user.role === 'driver' && vehicle.assignedDriverId === req.user.username;
+    // Auth check: Logistics Manager who oversees it
+    const isManager = req.user && ['logistics_manager', 'admin'].includes(req.user.role);
+    const isAssignedDriver = req.user && vehicle.assignedDriverId === req.user.username;
 
-    if (!isOwner && !isAssignedDriver) {
+    if (!isManager && !isAssignedDriver) {
       return res.status(403).json({ message: 'Access denied: You are not authorized to update transit states for this vehicle.' });
     }
 
