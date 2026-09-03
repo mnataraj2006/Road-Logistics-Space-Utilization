@@ -1,6 +1,7 @@
 import { SegmentTracker } from './segmentTracker.js';
 import { SpatialEngine } from './spatialEngine.js';
 import { calculateObjectiveScore } from './scorer.js';
+import { validatePackageWithinTruck } from './validator.js';
 
 /**
  * Executes constructive heuristic sorting strategies and local search improvements.
@@ -78,27 +79,62 @@ export class OptimizationSolver {
         });
 
         if (pPlacement) {
-          spatial.placeBox({ ...locked, segmentRange: segRange }, pPlacement);
-          assignments.push({
-            shipmentId: locked.shipmentId,
-            bookingId: locked.bookingId || locked.shipmentId,
-            pickup: pStop,
-            delivery: dStop,
-            pickupIndex: locked.pickupIndex || 0,
-            deliveryIndex: locked.deliveryIndex || stopsList.length - 1,
-            segmentRange: segRange,
-            volume: locked.volume,
-            weight: locked.weight,
-            priority: 'URGENT',
-            priorityWeight: 300,
-            isLocked: true,
-            loadingSequence: 0,
-            unloadingSequence: locked.deliveryIndex || 99,
-            dimensions: pPlacement.dims || { length: 0, width: 0, height: 0 },
-            orientation: pPlacement.orientation,
+          const geoCheck = validatePackageWithinTruck({
             position: pPlacement.position,
-            obstructionScore: pPlacement.obstructionScore
+            dimensions: pPlacement.dims,
+            truckDimensions: this.truck.dimensions
           });
+
+          if (geoCheck.valid) {
+            spatial.placeBox({ ...locked, segmentRange: segRange }, pPlacement);
+            const lockedDims = {
+              dx: pPlacement.dims.dx,
+              dy: pPlacement.dims.dy,
+              dz: pPlacement.dims.dz,
+              length: pPlacement.dims.dx,
+              width: pPlacement.dims.dy,
+              height: pPlacement.dims.dz
+            };
+            assignments.push({
+              shipmentId: locked.shipmentId,
+              bookingId: locked.bookingId || locked.shipmentId,
+              pickup: pStop,
+              delivery: dStop,
+              pickupIndex: locked.pickupIndex || 0,
+              deliveryIndex: locked.deliveryIndex || stopsList.length - 1,
+              segmentRange: segRange,
+              volume: locked.volume,
+              weight: locked.weight,
+              priority: 'URGENT',
+              priorityWeight: 300,
+              isLocked: true,
+              loadingSequence: 0,
+              unloadingSequence: locked.deliveryIndex || 99,
+              dimensions: lockedDims,
+              dx: lockedDims.dx,
+              dy: lockedDims.dy,
+              dz: lockedDims.dz,
+              length: lockedDims.length,
+              width: lockedDims.width,
+              height: lockedDims.height,
+              orientation: pPlacement.orientation,
+              position: pPlacement.position,
+              x: pPlacement.position.x,
+              y: pPlacement.position.y,
+              z: pPlacement.position.z,
+              obstructionScore: pPlacement.obstructionScore
+            });
+          } else {
+            unassigned.push({
+              shipmentId: locked.shipmentId,
+              bookingId: locked.bookingId || locked.shipmentId,
+              volume: locked.volume,
+              weight: locked.weight,
+              isLocked: true,
+              reason: `PACKAGE_OUTSIDE_TRUCK_BOUNDARY: Locked package exceeds boundary ${geoCheck.violations[0]?.boundary}`,
+              bottleneck: null
+            });
+          }
         }
       }
     }
@@ -179,9 +215,25 @@ export class OptimizationSolver {
         stackable: item.stackable,
         loadingSequence: placement.loadingSequence || seqCounter,
         unloadingSequence: placement.unloadingSequence || item.deliveryIndex || 1,
-        dimensions: placement.dims || placement.dimensions || { length: 0, width: 0, height: 0 },
+        dimensions: {
+          dx: placement.dims.dx,
+          dy: placement.dims.dy,
+          dz: placement.dims.dz,
+          length: placement.dims.dx,
+          width: placement.dims.dy,
+          height: placement.dims.dz
+        },
+        dx: placement.dims.dx,
+        dy: placement.dims.dy,
+        dz: placement.dims.dz,
+        length: placement.dims.dx,
+        width: placement.dims.dy,
+        height: placement.dims.dz,
         orientation: placement.orientation,
         position: placement.position,
+        x: placement.position.x,
+        y: placement.position.y,
+        z: placement.position.z,
         obstructionScore: placement.obstructionScore
       });
 

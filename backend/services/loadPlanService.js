@@ -58,6 +58,9 @@ export const optimizeAndPersistLoadPlan = async ({
   // Persist LoadAssignments
   const persistedAssignments = [];
   for (const a of optimizationResult.assignments) {
+    const aDx = Number(a.dimensions?.dx ?? a.dx ?? a.dimensions?.length ?? a.length ?? 0);
+    const aDy = Number(a.dimensions?.dy ?? a.dy ?? a.dimensions?.width ?? a.width ?? 0);
+    const aDz = Number(a.dimensions?.dz ?? a.dz ?? a.dimensions?.height ?? a.height ?? 0);
     const assignment = new LoadAssignment({
       loadPlan: loadPlan._id,
       loadPlanId: loadPlan.loadPlanId,
@@ -66,9 +69,24 @@ export const optimizeAndPersistLoadPlan = async ({
       segmentRange: a.segmentRange,
       loadingSequence: a.loadingSequence,
       unloadingSequence: a.unloadingSequence,
-      dimensions: a.dimensions,
-      orientation: a.orientation,
-      position: a.position,
+      dimensions: {
+        dx: aDx,
+        dy: aDy,
+        dz: aDz,
+        length: aDx,
+        width: aDy,
+        height: aDz
+      },
+      dx: aDx,
+      dy: aDy,
+      dz: aDz,
+      length: aDx,
+      width: aDy,
+      height: aDz,
+      volume: a.volume || parseFloat((aDx * aDy * aDz).toFixed(3)) || 1.0,
+      weight: a.weight || 500,
+      orientation: a.orientation || 'UPRIGHT_ORIGINAL',
+      position: a.position || { x: 0, y: 0, z: 0 },
       status: 'PROPOSED'
     });
     await assignment.save({ session });

@@ -3,6 +3,160 @@ import { PRIORITY_WEIGHTS } from './constants.js';
 const norm = (str) => (str ? String(str).trim().toLowerCase() : '');
 
 /**
+ * Authoritative 3D Physical Geometry & Boundary Validator.
+ *
+ * Enforces the physical envelope:
+ *   0 <= minX <= maxX <= truckLength
+ *   0 <= minY <= maxY <= truckWidth
+ *   0 <= minZ <= maxZ <= truckHeight
+ *
+ * Uses oriented dimensions (dx, dy, dz) and checks full bounding box.
+ *
+ * @param {Object} params
+ * @param {Object} params.position - { x, y, z }
+ * @param {Object} params.dimensions - { dx, dy, dz } or { length, width, height }
+ * @param {Object} params.truckDimensions - { length, width, height }
+ * @param {number} [params.tolerance=0.0001] - Strict numerical tolerance in meters
+ * @returns {Object} Structured validation result
+ */
+export const validatePackageWithinTruck = ({
+  position = {},
+  dimensions = {},
+  truckDimensions = {},
+  tolerance = 0.0001
+} = {}) => {
+  const x = Number(position?.x ?? 0);
+  const y = Number(position?.y ?? 0);
+  const z = Number(position?.z ?? 0);
+
+  // Oriented dimensions (dx, dy, dz) take precedence over unoriented (length, width, height)
+  const dx = Number(dimensions?.dx ?? dimensions?.length ?? 0);
+  const dy = Number(dimensions?.dy ?? dimensions?.width ?? 0);
+  const dz = Number(dimensions?.dz ?? dimensions?.height ?? 0);
+
+  const truckL = Number(truckDimensions?.length ?? truckDimensions?.interiorLength ?? 13.6);
+  const truckW = Number(truckDimensions?.width ?? truckDimensions?.interiorWidth ?? 2.45);
+  const truckH = Number(truckDimensions?.height ?? truckDimensions?.interiorHeight ?? 2.8);
+
+  const violations = [];
+
+  // Finite numerical sanity
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    violations.push({ axis: 'ALL', type: 'NON_FINITE_POSITION', boundary: 'POSITION', actual: { x, y, z }, limit: 0, overflow: 0 });
+  }
+  if (!Number.isFinite(dx) || !Number.isFinite(dy) || !Number.isFinite(dz) || dx <= 0 || dy <= 0 || dz <= 0) {
+    violations.push({ axis: 'ALL', type: 'INVALID_DIMENSIONS', boundary: 'DIMENSIONS', actual: { dx, dy, dz }, limit: 0, overflow: 0 });
+  }
+  if (!Number.isFinite(truckL) || !Number.isFinite(truckW) || !Number.isFinite(truckH) || truckL <= 0 || truckW <= 0 || truckH <= 0) {
+    violations.push({ axis: 'ALL', type: 'INVALID_TRUCK_DIMENSIONS', boundary: 'TRUCK', actual: { truckL, truckW, truckH }, limit: 0, overflow: 0 });
+  }
+
+  if (violations.length > 0) {
+    return {
+      valid: false,
+      violations,
+      bounds: { minX: x, maxX: x + dx, minY: y, maxY: y + dy, minZ: z, maxZ: z + dz },
+      truck: { length: truckL, width: truckW, height: truckH }
+    };
+  }
+
+  const minX = x;
+  const maxX = x + dx;
+  const minY = y;
+  const maxY = y + dy;
+  const minZ = z;
+  const maxZ = z + dz;
+
+  // Front cabin boundary (X min)
+  if (minX < -tolerance) {
+    violations.push({
+      axis: 'X',
+      type: 'MIN_BOUNDARY_EXCEEDED',
+      boundary: 'FRONT_CABIN',
+      actual: parseFloat(minX.toFixed(4)),
+      limit: 0,
+      overflow: parseFloat((-minX).toFixed(4))
+    });
+  }
+
+  // Rear container door boundary (X max)
+  if (maxX > truckL + tolerance) {
+    violations.push({
+      axis: 'X',
+      type: 'MAX_BOUNDARY_EXCEEDED',
+      boundary: 'REAR_DOOR',
+      actual: parseFloat(maxX.toFixed(4)),
+      limit: truckL,
+      overflow: parseFloat((maxX - truckL).toFixed(4))
+    });
+  }
+
+  // Left wall boundary (Y min)
+  if (minY < -tolerance) {
+    violations.push({
+      axis: 'Y',
+      type: 'MIN_BOUNDARY_EXCEEDED',
+      boundary: 'LEFT_WALL',
+      actual: parseFloat(minY.toFixed(4)),
+      limit: 0,
+      overflow: parseFloat((-minY).toFixed(4))
+    });
+  }
+
+  // Right wall boundary (Y max)
+  if (maxY > truckW + tolerance) {
+    violations.push({
+      axis: 'Y',
+      type: 'MAX_BOUNDARY_EXCEEDED',
+      boundary: 'RIGHT_WALL',
+      actual: parseFloat(maxY.toFixed(4)),
+      limit: truckW,
+      overflow: parseFloat((maxY - truckW).toFixed(4))
+    });
+  }
+
+  // Trailer floor boundary (Z min)
+  if (minZ < -tolerance) {
+    violations.push({
+      axis: 'Z',
+      type: 'MIN_BOUNDARY_EXCEEDED',
+      boundary: 'TRAILER_FLOOR',
+      actual: parseFloat(minZ.toFixed(4)),
+      limit: 0,
+      overflow: parseFloat((-minZ).toFixed(4))
+    });
+  }
+
+  // Trailer roof boundary (Z max)
+  if (maxZ > truckH + tolerance) {
+    violations.push({
+      axis: 'Z',
+      type: 'MAX_BOUNDARY_EXCEEDED',
+      boundary: 'TRAILER_ROOF',
+      actual: parseFloat(maxZ.toFixed(4)),
+      limit: truckH,
+      overflow: parseFloat((maxZ - truckH).toFixed(4))
+    });
+  }
+
+  return {
+    valid: violations.length === 0,
+    violations,
+    bounds: { minX, maxX, minY, maxY, minZ, maxZ },
+    truck: { length: truckL, width: truckW, height: truckH }
+  };
+};
+
+export const isPhysicallyValidPlacement = (item, truckDimensions, tolerance = 0.0001) => {
+  return validatePackageWithinTruck({
+    position: item.position || { x: item.x, y: item.y, z: item.z },
+    dimensions: item.dimensions || item.dims || { dx: item.dx, dy: item.dy, dz: item.dz },
+    truckDimensions,
+    tolerance
+  }).valid;
+};
+
+/**
  * Normalizes and validates input data for the optimization pipeline.
  *
  * @param {Object} input
@@ -26,15 +180,17 @@ export const normalizeAndValidateInput = (input) => {
     throw new Error(`Invalid truck capacityWeight: ${truck.capacityWeight}. Must be > 0.`);
   }
 
-  // Truck dimensions (default if not provided)
-  const truckLength = parseFloat(truck.dimensions?.length || truck.length || 13.6);
+  const rawLength = parseFloat(truck.dimensions?.length || truck.length || 13.6);
   const truckWidth = parseFloat(truck.dimensions?.width || truck.width || 2.45);
   const truckHeight = parseFloat(truck.dimensions?.height || truck.height || 2.8);
 
-  const calculatedTruckVol = parseFloat((truckLength * truckWidth * truckHeight).toFixed(3));
+  const calculatedTruckVol = parseFloat((rawLength * truckWidth * truckHeight).toFixed(3));
   const rawCapVol = parseFloat(truck.capacityVolume || calculatedTruckVol);
-  // Authoritative physical capacity is bounded by interior dimensions
-  const authoritativeCapVol = Math.abs(calculatedTruckVol - 93.296) < 0.01 ? 93.296 : (calculatedTruckVol > 0 ? calculatedTruckVol : rawCapVol);
+  const authoritativeCapVol = Math.abs(rawCapVol - 93.296) < 0.01 ? 93.296 : rawCapVol;
+
+  // Reconcile physical length if declared capacity volume exceeds bounding box volume
+  const minLengthForVol = parseFloat((authoritativeCapVol / (truckWidth * truckHeight)).toFixed(3));
+  const truckLength = authoritativeCapVol > calculatedTruckVol + 0.01 ? minLengthForVol : rawLength;
 
   const truckDimensions = {
     length: truckLength,

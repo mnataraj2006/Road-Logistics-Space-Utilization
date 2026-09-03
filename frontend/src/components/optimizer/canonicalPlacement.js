@@ -26,6 +26,151 @@ export const DESTINATION_PALETTES = [
 const normStop = (s) => (s ? String(s).trim().toLowerCase() : '');
 
 /**
+ * Authoritative 3D Physical Geometry & Boundary Validator.
+ *
+ * Enforces the physical envelope:
+ *   0 <= minX <= maxX <= truckLength
+ *   0 <= minY <= maxY <= truckWidth
+ *   0 <= minZ <= maxZ <= truckHeight
+ *
+ * Uses oriented dimensions (dx, dy, dz) and checks full bounding box.
+ *
+ * @param {Object} params
+ * @param {Object} params.position - { x, y, z }
+ * @param {Object} params.dimensions - { dx, dy, dz } or { length, width, height }
+ * @param {Object} params.truckDimensions - { length, width, height }
+ * @param {number} [params.tolerance=0.0001] - Strict numerical tolerance in meters
+ * @returns {Object} Structured validation result
+ */
+export const validatePackageWithinTruck = ({
+  position = {},
+  dimensions = {},
+  truckDimensions = {},
+  tolerance = 0.0001
+} = {}) => {
+  const x = Number(position?.x ?? 0);
+  const y = Number(position?.y ?? 0);
+  const z = Number(position?.z ?? 0);
+
+  // Oriented dimensions (dx, dy, dz) take precedence over unoriented (length, width, height)
+  const dx = Number(dimensions?.dx ?? dimensions?.length ?? 0);
+  const dy = Number(dimensions?.dy ?? dimensions?.width ?? 0);
+  const dz = Number(dimensions?.dz ?? dimensions?.height ?? 0);
+
+  const truckL = Number(truckDimensions?.length ?? truckDimensions?.interiorLength ?? AUTHORITATIVE_TRUCK.length);
+  const truckW = Number(truckDimensions?.width ?? truckDimensions?.interiorWidth ?? AUTHORITATIVE_TRUCK.width);
+  const truckH = Number(truckDimensions?.height ?? truckDimensions?.interiorHeight ?? AUTHORITATIVE_TRUCK.height);
+
+  const violations = [];
+
+  // Finite numerical sanity
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    violations.push({ axis: 'ALL', type: 'NON_FINITE_POSITION', boundary: 'POSITION', actual: { x, y, z }, limit: 0, overflow: 0 });
+  }
+  if (!Number.isFinite(dx) || !Number.isFinite(dy) || !Number.isFinite(dz) || dx <= 0 || dy <= 0 || dz <= 0) {
+    violations.push({ axis: 'ALL', type: 'INVALID_DIMENSIONS', boundary: 'DIMENSIONS', actual: { dx, dy, dz }, limit: 0, overflow: 0 });
+  }
+  if (!Number.isFinite(truckL) || !Number.isFinite(truckW) || !Number.isFinite(truckH) || truckL <= 0 || truckW <= 0 || truckH <= 0) {
+    violations.push({ axis: 'ALL', type: 'INVALID_TRUCK_DIMENSIONS', boundary: 'TRUCK', actual: { truckL, truckW, truckH }, limit: 0, overflow: 0 });
+  }
+
+  if (violations.length > 0) {
+    return {
+      valid: false,
+      violations,
+      bounds: { minX: x, maxX: x + dx, minY: y, maxY: y + dy, minZ: z, maxZ: z + dz },
+      truck: { length: truckL, width: truckW, height: truckH }
+    };
+  }
+
+  const minX = x;
+  const maxX = x + dx;
+  const minY = y;
+  const maxY = y + dy;
+  const minZ = z;
+  const maxZ = z + dz;
+
+  // Front cabin boundary (X min)
+  if (minX < -tolerance) {
+    violations.push({
+      axis: 'X',
+      type: 'MIN_BOUNDARY_EXCEEDED',
+      boundary: 'FRONT_CABIN',
+      actual: parseFloat(minX.toFixed(4)),
+      limit: 0,
+      overflow: parseFloat((-minX).toFixed(4))
+    });
+  }
+
+  // Rear container door boundary (X max) - THE REAR DOOR
+  if (maxX > truckL + tolerance) {
+    violations.push({
+      axis: 'X',
+      type: 'MAX_BOUNDARY_EXCEEDED',
+      boundary: 'REAR_DOOR',
+      actual: parseFloat(maxX.toFixed(4)),
+      limit: truckL,
+      overflow: parseFloat((maxX - truckL).toFixed(4))
+    });
+  }
+
+  // Left wall boundary (Y min)
+  if (minY < -tolerance) {
+    violations.push({
+      axis: 'Y',
+      type: 'MIN_BOUNDARY_EXCEEDED',
+      boundary: 'LEFT_WALL',
+      actual: parseFloat(minY.toFixed(4)),
+      limit: 0,
+      overflow: parseFloat((-minY).toFixed(4))
+    });
+  }
+
+  // Right wall boundary (Y max)
+  if (maxY > truckW + tolerance) {
+    violations.push({
+      axis: 'Y',
+      type: 'MAX_BOUNDARY_EXCEEDED',
+      boundary: 'RIGHT_WALL',
+      actual: parseFloat(maxY.toFixed(4)),
+      limit: truckW,
+      overflow: parseFloat((maxY - truckW).toFixed(4))
+    });
+  }
+
+  // Trailer floor boundary (Z min)
+  if (minZ < -tolerance) {
+    violations.push({
+      axis: 'Z',
+      type: 'MIN_BOUNDARY_EXCEEDED',
+      boundary: 'TRAILER_FLOOR',
+      actual: parseFloat(minZ.toFixed(4)),
+      limit: 0,
+      overflow: parseFloat((-minZ).toFixed(4))
+    });
+  }
+
+  // Trailer roof boundary (Z max)
+  if (maxZ > truckH + tolerance) {
+    violations.push({
+      axis: 'Z',
+      type: 'MAX_BOUNDARY_EXCEEDED',
+      boundary: 'TRAILER_ROOF',
+      actual: parseFloat(maxZ.toFixed(4)),
+      limit: truckH,
+      overflow: parseFloat((maxZ - truckH).toFixed(4))
+    });
+  }
+
+  return {
+    valid: violations.length === 0,
+    violations,
+    bounds: { minX, maxX, minY, maxY, minZ, maxZ },
+    truck: { length: truckL, width: truckW, height: truckH }
+  };
+};
+
+/**
  * Normalizes raw assignment data into authoritative canonical placements.
  */
 export const normalizeCanonicalPlacements = (assignments = [], truckSpecs = {}, stops = []) => {
@@ -61,15 +206,22 @@ export const normalizeCanonicalPlacements = (assignments = [], truckSpecs = {}, 
     const y = Number(item.position?.y ?? item.y ?? 0);
     const z = Number(item.position?.z ?? item.z ?? 0);
 
-    // Exact physical dimensions
-    const dx = Number(item.dimensions?.length ?? item.dimensions?.dx ?? item.length ?? item.dx ?? 1.2);
-    const dy = Number(item.dimensions?.width ?? item.dimensions?.dy ?? item.width ?? item.dy ?? 1.0);
-    const dz = Number(item.dimensions?.height ?? item.dimensions?.dz ?? item.height ?? item.dz ?? 1.2);
+    // Exact physical dimensions: ORIENTED dimensions (dx, dy, dz) take absolute precedence
+    const dx = Number(item.dimensions?.dx ?? item.dx ?? item.dimensions?.length ?? item.length ?? 1.2);
+    const dy = Number(item.dimensions?.dy ?? item.dy ?? item.dimensions?.width ?? item.width ?? 1.0);
+    const dz = Number(item.dimensions?.dz ?? item.dz ?? item.dimensions?.height ?? item.height ?? 1.2);
 
     const volume = Number(item.volume ?? (dx * dy * dz).toFixed(3));
     const weight = Number(item.weight ?? 500);
 
     const colorIdx = dIdx >= 0 ? dIdx % DESTINATION_PALETTES.length : idx % DESTINATION_PALETTES.length;
+
+    // Validate physical boundary
+    const geoValidation = validatePackageWithinTruck({
+      position: { x, y, z },
+      dimensions: { dx, dy, dz },
+      truckDimensions: { length: truckLength, width: truckWidth, height: truckHeight }
+    });
 
     return {
       ...item,
@@ -98,6 +250,14 @@ export const normalizeCanonicalPlacements = (assignments = [], truckSpecs = {}, 
       length: parseFloat(dx.toFixed(4)),
       width: parseFloat(dy.toFixed(4)),
       height: parseFloat(dz.toFixed(4)),
+      dimensions: {
+        dx: parseFloat(dx.toFixed(4)),
+        dy: parseFloat(dy.toFixed(4)),
+        dz: parseFloat(dz.toFixed(4)),
+        length: parseFloat(dx.toFixed(4)),
+        width: parseFloat(dy.toFixed(4)),
+        height: parseFloat(dz.toFixed(4))
+      },
       volume: parseFloat(volume.toFixed(3)),
       weight: Math.round(weight),
       orientation: item.orientation || 'UPRIGHT_ORIGINAL',
@@ -107,7 +267,9 @@ export const normalizeCanonicalPlacements = (assignments = [], truckSpecs = {}, 
       stackable: item.stackable !== false,
       isLocked: Boolean(item.isLocked || item.status === 'LOCKED' || item.status === 'APPROVED'),
       status: item.liveStatus || item.status || (item.isLocked ? 'LOCKED' : 'OPTIMIZED'),
-      destColorIndex: colorIdx
+      destColorIndex: colorIdx,
+      isPhysicallyValid: geoValidation.valid,
+      geometryViolations: geoValidation.violations
     };
   });
 };
@@ -132,6 +294,8 @@ export const validateAuthoritativePlacements = (canonicalItems = [], truck = {},
   const errors = [];
   const warnings = [];
   const accessibilityConflicts = [];
+  const validItems = [];
+  const invalidItems = [];
 
   const truckL = Number(truck.length || AUTHORITATIVE_TRUCK.length);
   const truckW = Number(truck.width || AUTHORITATIVE_TRUCK.width);
@@ -140,19 +304,21 @@ export const validateAuthoritativePlacements = (canonicalItems = [], truck = {},
   const numStops = Math.max(2, (stops || []).length);
   const numSegments = numStops - 1;
 
-  // 1. Physical Boundary Checks
+  // 1. Authoritative Physical Boundary Checks
   canonicalItems.forEach((item) => {
-    if (item.x < -0.001 || item.y < -0.001 || item.z < -0.001) {
-      errors.push(`Package ${item.shipmentId} has negative coordinate (${item.x}, ${item.y}, ${item.z}).`);
-    }
-    if (item.x + item.dx > truckL + 0.001) {
-      errors.push(`Package ${item.shipmentId} exceeds trailer length (${(item.x + item.dx).toFixed(3)}m > ${truckL}m).`);
-    }
-    if (item.y + item.dy > truckW + 0.001) {
-      errors.push(`Package ${item.shipmentId} exceeds trailer width (${(item.y + item.dy).toFixed(3)}m > ${truckW}m).`);
-    }
-    if (item.z + item.dz > truckH + 0.001) {
-      errors.push(`Package ${item.shipmentId} exceeds trailer height (${(item.z + item.dz).toFixed(3)}m > ${truckH}m).`);
+    const geo = validatePackageWithinTruck({
+      position: { x: item.x, y: item.y, z: item.z },
+      dimensions: { dx: item.dx, dy: item.dy, dz: item.dz },
+      truckDimensions: { length: truckL, width: truckW, height: truckH }
+    });
+
+    if (!geo.valid) {
+      invalidItems.push({ item, violations: geo.violations });
+      geo.violations.forEach(v => {
+        errors.push(`Package ${item.shipmentId} violates ${v.boundary} on ${v.axis}-axis: actual ${v.actual}m > limit ${v.limit}m (overflow: ${v.overflow}m).`);
+      });
+    } else {
+      validItems.push(item);
     }
   });
 
@@ -202,7 +368,9 @@ export const validateAuthoritativePlacements = (canonicalItems = [], truck = {},
   }
 
   return {
-    valid: errors.length === 0,
+    valid: errors.length === 0 && invalidItems.length === 0,
+    validItems,
+    invalidItems,
     errors,
     warnings,
     accessibilityConflicts,

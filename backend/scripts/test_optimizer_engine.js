@@ -174,7 +174,7 @@ const reverseShipment = [
 ];
 const resReverse = generateLoadPlan({ truck: standardTruck, route: routeABC, shipments: reverseShipment });
 assert(resReverse.assignments.length === 0, 'TEST 12 - Impossible Shipment: Reverse direction rejected');
-assert(resReverse.unassignedShipments[0].reason.includes('Invalid direction'), 'TEST 12 - Rejection reason clearly explained');
+assert(resReverse.unassignedShipments[0].reason.toLowerCase().includes('invalid_direction') || resReverse.unassignedShipments[0].reason.toLowerCase().includes('invalid direction'), 'TEST 12 - Rejection reason clearly explained');
 
 // ---------------------------------------------------------------------------
 // TEST 13: Multiple Trucks Fleet Allocation

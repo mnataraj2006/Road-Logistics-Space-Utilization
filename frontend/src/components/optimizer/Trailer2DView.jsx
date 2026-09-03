@@ -18,7 +18,8 @@ import {
   DESTINATION_PALETTES,
   normalizeCanonicalPlacements,
   getActiveSegmentCargo,
-  validateAuthoritativePlacements
+  validateAuthoritativePlacements,
+  validatePackageWithinTruck
 } from './canonicalPlacement';
 
 /**
@@ -91,14 +92,33 @@ const Trailer2DView = ({
     );
   }, [canonicalItems, truckL, truckW, truckH, resolvedStops]);
 
+  // Strict Pre-Render Physical Boundary Filter & Quarantine for 2D CAD
+  const { physicallyValidActiveItems, quarantinedActiveItems } = useMemo(() => {
+    const valid = [];
+    const quarantined = [];
+    activeItems.forEach(item => {
+      const check = validatePackageWithinTruck({
+        position: { x: item.x, y: item.y, z: item.z },
+        dimensions: { dx: item.dx, dy: item.dy, dz: item.dz },
+        truckDimensions: { length: truckL, width: truckW, height: truckH }
+      });
+      if (check.valid) {
+        valid.push(item);
+      } else {
+        quarantined.push({ item, violations: check.violations });
+      }
+    });
+    return { physicallyValidActiveItems: valid, quarantinedActiveItems: quarantined };
+  }, [activeItems, truckL, truckW, truckH]);
+
   // Telemetry metrics
   const totalOccupiedVol = useMemo(() => {
-    return activeItems.reduce((acc, it) => acc + it.volume, 0);
-  }, [activeItems]);
+    return physicallyValidActiveItems.reduce((acc, it) => acc + it.volume, 0);
+  }, [physicallyValidActiveItems]);
 
   const totalOccupiedWt = useMemo(() => {
-    return activeItems.reduce((acc, it) => acc + it.weight, 0);
-  }, [activeItems]);
+    return physicallyValidActiveItems.reduce((acc, it) => acc + it.weight, 0);
+  }, [physicallyValidActiveItems]);
 
   const volUtilPct = truckVol > 0 ? ((totalOccupiedVol / truckVol) * 100).toFixed(1) : 0;
   const wtUtilPct = truckWt > 0 ? ((totalOccupiedWt / truckWt) * 100).toFixed(1) : 0;
@@ -284,8 +304,8 @@ const Trailer2DView = ({
               </g>
             ))}
 
-            {/* Rendered Physical 2D Cargo Rectangles */}
-            {activeItems.map((item, idx) => {
+            {/* Rendered Physical 2D Cargo Rectangles (Valid Items Only) */}
+            {physicallyValidActiveItems.map((item, idx) => {
               const palette = DESTINATION_PALETTES[item.destColorIndex % DESTINATION_PALETTES.length];
               const isSelected = selectedItem?.shipmentId === item.shipmentId;
               const isBlocked = validation.accessibilityConflicts.some(c => c.blockedItem === item.shipmentId);
@@ -453,8 +473,8 @@ const Trailer2DView = ({
               </g>
             ))}
 
-            {/* Rendered Cargo Packages (Elevation X × Z) */}
-            {activeItems.map((item, idx) => {
+            {/* Rendered Cargo Packages (Elevation X × Z - Valid Items Only) */}
+            {physicallyValidActiveItems.map((item, idx) => {
               const palette = DESTINATION_PALETTES[item.destColorIndex % DESTINATION_PALETTES.length];
               const isSelected = selectedItem?.shipmentId === item.shipmentId;
               const isBlocked = validation.accessibilityConflicts.some(c => c.blockedItem === item.shipmentId);

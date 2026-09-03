@@ -8,7 +8,8 @@ import Shipment from '../models/Shipment.js';
 import Booking from '../models/Booking.js';
 import LoadPlan from '../models/LoadPlan.js';
 import LoadAssignment from '../models/LoadAssignment.js';
-import { generateLoadPlan } from '../optimizer/index.js';
+import { generateLoadPlan, validatePackageWithinTruck } from '../optimizer/index.js';
+import { SpatialEngine } from '../optimizer/spatialEngine.js';
 import { dispatchTruck } from './transitController.js';
 import { getTenantFilter } from '../middleware/auth.js';
 
@@ -217,6 +218,8 @@ export const getTripById = async (req, res) => {
       status: { $in: ['APPROVED', 'ACTIVE', 'LOCKED', 'GENERATED', 'UNDER_REVIEW', 'SUPERSEDED'] }
     }).sort({ isImmutable: -1, version: -1, createdAt: -1 });
 
+    // Resolve authoritative truck first
+    const authTruck = resolveAuthoritativeTruck(trip, trip.vehicle);
     const currentCity = trip.currentStop || (trip.route?.stopsDetails?.[trip.currentStopIndex || 0]?.locationName) || '';
     let assignments = [];
     if (latestPlan) {
@@ -253,6 +256,14 @@ export const getTripById = async (req, res) => {
           liveStatus = 'LOCKED';
         }
 
+        const aDx = Number(a.dimensions?.dx ?? a.dx ?? a.dimensions?.length ?? s.length ?? b.length ?? 1.2);
+        const aDy = Number(a.dimensions?.dy ?? a.dy ?? a.dimensions?.width ?? s.width ?? b.width ?? 1.0);
+        const aDz = Number(a.dimensions?.dz ?? a.dz ?? a.dimensions?.height ?? s.height ?? b.height ?? 1.2);
+
+        const aX = Number(a.position?.x ?? a.x ?? 0);
+        const aY = Number(a.position?.y ?? a.y ?? 0);
+        const aZ = Number(a.position?.z ?? a.z ?? 0);
+
         return {
           ...s,
           ...b,
@@ -264,22 +275,25 @@ export const getTripById = async (req, res) => {
           deliveryStop: destStop,
           pickup: origStop,
           delivery: destStop,
-          dimensions: a.dimensions || {
-            length: s.length || b.length || 1.2,
-            width: s.width || b.width || 1.0,
-            height: s.height || b.height || 1.2
+          dimensions: {
+            dx: aDx,
+            dy: aDy,
+            dz: aDz,
+            length: aDx,
+            width: aDy,
+            height: aDz
           },
-          length: a.dimensions?.length || s.length || b.length || 1.2,
-          width: a.dimensions?.width || s.width || b.width || 1.0,
-          height: a.dimensions?.height || s.height || b.height || 1.2,
-          dx: a.dimensions?.length || s.length || b.length || 1.2,
-          dy: a.dimensions?.width || s.width || b.width || 1.0,
-          dz: a.dimensions?.height || s.height || b.height || 1.2,
-          position: a.position || { x: 0, y: 0, z: 0 },
-          x: a.position?.x ?? 0,
-          y: a.position?.y ?? 0,
-          z: a.position?.z ?? 0,
-          volume: a.volume || s.volume || b.volume || 1.0,
+          length: aDx,
+          width: aDy,
+          height: aDz,
+          dx: aDx,
+          dy: aDy,
+          dz: aDz,
+          position: { x: aX, y: aY, z: aZ },
+          x: aX,
+          y: aY,
+          z: aZ,
+          volume: a.volume || s.volume || b.volume || parseFloat((aDx * aDy * aDz).toFixed(3)) || 1.0,
           weight: a.weight || s.weight || b.weight || 500,
           fragile: Boolean(a.fragile ?? s.fragile ?? b.fragile),
           stackable: a.stackable !== false && s.stackable !== false && b.stackable !== false,
@@ -291,55 +305,80 @@ export const getTripById = async (req, res) => {
     }
 
     // Fallback if no assignments found in loadPlan but shipments are allocated to trip
+    // Uses SpatialEngine bounded strictly by authTruck dimensions so cargo NEVER exceeds rear doors
     if (assignments.length === 0) {
       const allocatedShipments = await Shipment.find({ allocatedTripId: trip.tripId }).lean();
       if (allocatedShipments.length > 0) {
-        let currentX = 0;
-        assignments = allocatedShipments.map((s) => {
+        const fallbackSpatial = new SpatialEngine(authTruck.dimensions, authTruck.capacityVolume);
+        const stopsList = trip.route?.stopsDetails?.map(s => s.locationName) || trip.route?.stops || ['Chennai', 'Bangalore'];
+
+        assignments = [];
+        for (const s of allocatedShipments) {
           const sLen = Number(s.length || 1.2);
           const sWidth = Number(s.width || 1.0);
           const sHeight = Number(s.height || 1.2);
-          const posX = parseFloat(currentX.toFixed(2));
-          currentX += sLen + 0.05; // Sequential non-overlapping spacing along X
 
-          const isDelivered = s.status === 'DELIVERED';
-          const isReadyUnload = !isDelivered && norm(s.deliveryStop) === norm(currentCity);
-          const lStatus = isDelivered ? 'DELIVERED' : isReadyUnload ? 'READY_FOR_UNLOAD' : 'ON_TRUCK';
-
-          return {
-            ...s,
-            shipmentId: s.shipmentId,
-            bookingId: s.bookingId || s.shipmentId,
-            cargoDescription: s.cargoDescription || 'General Cargo',
-            pickupStop: s.pickupStop || 'Chennai',
-            deliveryStop: s.deliveryStop || 'Bangalore',
-            pickup: s.pickupStop || 'Chennai',
-            delivery: s.deliveryStop || 'Bangalore',
-            dimensions: { length: sLen, width: sWidth, height: sHeight },
-            dx: sLen,
-            dy: sWidth,
-            dz: sHeight,
-            length: sLen,
-            width: sWidth,
-            height: sHeight,
-            x: posX,
-            y: 0.1,
-            z: 0.1,
-            position: { x: posX, y: 0.1, z: 0.1 },
-            volume: s.volume || 1.0,
-            weight: s.weight || 500,
-            fragile: Boolean(s.fragile),
-            stackable: s.stackable !== false,
-            isLocked: true,
-            liveStatus: lStatus,
-            status: lStatus
+          const pIdx = stopsList.findIndex(st => norm(st) === norm(s.pickupStop));
+          const dIdx = stopsList.findIndex(st => norm(st) === norm(s.deliveryStop));
+          const segRange = {
+            fromIndex: pIdx >= 0 ? pIdx : 0,
+            toIndex: dIdx >= 0 ? dIdx : stopsList.length - 1,
+            fromStop: s.pickupStop || stopsList[0],
+            toStop: s.deliveryStop || stopsList[stopsList.length - 1]
           };
-        });
+
+          const placement = fallbackSpatial.findBestPlacement({
+            shipmentId: s.shipmentId,
+            dimensions: { length: sLen, width: sWidth, height: sHeight },
+            volume: s.volume || (sLen * sWidth * sHeight) || 1.0,
+            weight: s.weight || 500,
+            allowRotation: s.allowRotation !== false,
+            segmentRange: segRange
+          });
+
+          if (placement) {
+            fallbackSpatial.placeBox(s, placement);
+            const isDelivered = s.status === 'DELIVERED';
+            const isReadyUnload = !isDelivered && norm(s.deliveryStop) === norm(currentCity);
+            const lStatus = isDelivered ? 'DELIVERED' : isReadyUnload ? 'READY_FOR_UNLOAD' : 'ON_TRUCK';
+
+            const aDx = placement.dims.dx;
+            const aDy = placement.dims.dy;
+            const aDz = placement.dims.dz;
+
+            assignments.push({
+              ...s,
+              shipmentId: s.shipmentId,
+              bookingId: s.bookingId || s.shipmentId,
+              cargoDescription: s.cargoDescription || 'General Cargo',
+              pickupStop: s.pickupStop || stopsList[0],
+              deliveryStop: s.deliveryStop || stopsList[stopsList.length - 1],
+              pickup: s.pickupStop || stopsList[0],
+              delivery: s.deliveryStop || stopsList[stopsList.length - 1],
+              dimensions: { dx: aDx, dy: aDy, dz: aDz, length: aDx, width: aDy, height: aDz },
+              dx: aDx,
+              dy: aDy,
+              dz: aDz,
+              length: aDx,
+              width: aDy,
+              height: aDz,
+              x: placement.position.x,
+              y: placement.position.y,
+              z: placement.position.z,
+              position: placement.position,
+              volume: s.volume || parseFloat((aDx * aDy * aDz).toFixed(3)) || 1.0,
+              weight: s.weight || 500,
+              fragile: Boolean(s.fragile),
+              stackable: s.stackable !== false,
+              isLocked: true,
+              liveStatus: lStatus,
+              status: lStatus
+            });
+          }
+        }
       }
     }
 
-    // Resolve authoritative truck
-    const authTruck = resolveAuthoritativeTruck(trip, trip.vehicle);
     const tripObj = trip.toObject();
     tripObj.effectiveVehicle = authTruck;
     if (tripObj.vehicle) {
@@ -763,6 +802,9 @@ export const generateTripLoadPlan = async (req, res) => {
     // Save assignments
     const savedAssignments = [];
     for (const a of optResult.assignments) {
+      const aDx = Number(a.dimensions?.dx ?? a.dx ?? a.dimensions?.length ?? a.length ?? 0);
+      const aDy = Number(a.dimensions?.dy ?? a.dy ?? a.dimensions?.width ?? a.width ?? 0);
+      const aDz = Number(a.dimensions?.dz ?? a.dz ?? a.dimensions?.height ?? a.height ?? 0);
       const assignDoc = new LoadAssignment({
         loadPlan: newPlan._id,
         loadPlanId: newPlan.loadPlanId,
@@ -776,10 +818,19 @@ export const generateTripLoadPlan = async (req, res) => {
         loadingSequence: a.loadingSequence,
         unloadingSequence: a.unloadingSequence,
         dimensions: {
-          length: a.dimensions?.length || 0,
-          width: a.dimensions?.width || 0,
-          height: a.dimensions?.height || 0
+          dx: aDx,
+          dy: aDy,
+          dz: aDz,
+          length: aDx,
+          width: aDy,
+          height: aDz
         },
+        dx: aDx,
+        dy: aDy,
+        dz: aDz,
+        length: aDx,
+        width: aDy,
+        height: aDz,
         volume: a.volume,
         weight: a.weight,
         orientation: a.orientation,

@@ -62,8 +62,17 @@ const loadAssignmentSchema = new mongoose.Schema({
   dimensions: {
     length: { type: Number, default: 0 },
     width: { type: Number, default: 0 },
-    height: { type: Number, default: 0 }
+    height: { type: Number, default: 0 },
+    dx: { type: Number, default: 0 },
+    dy: { type: Number, default: 0 },
+    dz: { type: Number, default: 0 }
   },
+  dx: { type: Number, default: 0 },
+  dy: { type: Number, default: 0 },
+  dz: { type: Number, default: 0 },
+  length: { type: Number, default: 0 },
+  width: { type: Number, default: 0 },
+  height: { type: Number, default: 0 },
   volume: {
     type: Number,
     required: true,

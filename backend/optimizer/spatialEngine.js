@@ -1,4 +1,5 @@
 import { ORIENTATIONS } from './constants.js';
+import { validatePackageWithinTruck } from './validator.js';
 
 const EPSILON = 1e-7; // Exact 0.1 micrometer precision for boundary & collision detection
 const norm = (s) => (s ? String(s).trim().toLowerCase() : '');
@@ -83,14 +84,17 @@ export class SpatialEngine {
    * Checks whether a 3D box is strictly inside container boundaries.
    */
   isWithinBoundaries(x, y, z, dx, dy, dz) {
-    return (
-      x >= -EPSILON &&
-      y >= -EPSILON &&
-      z >= -EPSILON &&
-      x + dx <= this.interiorLength + EPSILON &&
-      y + dy <= this.interiorWidth + EPSILON &&
-      z + dz <= this.interiorHeight + EPSILON
-    );
+    const res = validatePackageWithinTruck({
+      position: { x, y, z },
+      dimensions: { dx, dy, dz },
+      truckDimensions: {
+        length: this.interiorLength,
+        width: this.interiorWidth,
+        height: this.interiorHeight
+      },
+      tolerance: EPSILON
+    });
+    return res.valid;
   }
 
   /**

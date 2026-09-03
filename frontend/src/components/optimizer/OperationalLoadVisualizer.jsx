@@ -32,7 +32,8 @@ import {
   DESTINATION_PALETTES,
   normalizeCanonicalPlacements,
   getActiveSegmentCargo,
-  validateAuthoritativePlacements
+  validateAuthoritativePlacements,
+  validatePackageWithinTruck
 } from './canonicalPlacement';
 import Trailer2DView from './Trailer2DView';
 
@@ -138,14 +139,49 @@ const OperationalLoadVisualizer = ({
     );
   }, [canonicalItems, truckLength, truckWidth, truckHeight, resolvedStops]);
 
+  // ── 4B. Strict Pre-Render Physical Boundary Filter & Quarantine ──
+  // Under NO circumstances may a package outside the interior loading volume be rendered in 3D.
+  const { physicallyValidActiveItems, quarantinedActiveItems } = useMemo(() => {
+    const valid = [];
+    const quarantined = [];
+    activeItems.forEach(item => {
+      const check = validatePackageWithinTruck({
+        position: { x: item.x, y: item.y, z: item.z },
+        dimensions: { dx: item.dx, dy: item.dy, dz: item.dz },
+        truckDimensions: { length: truckLength, width: truckWidth, height: truckHeight }
+      });
+      if (check.valid) {
+        valid.push(item);
+      } else {
+        quarantined.push({ item, violations: check.violations });
+      }
+    });
+    return { physicallyValidActiveItems: valid, quarantinedActiveItems: quarantined };
+  }, [activeItems, truckLength, truckWidth, truckHeight]);
+
+  useEffect(() => {
+    if (quarantinedActiveItems.length > 0) {
+      console.error('[DigitalTwin] Quarantined invalid packages exceeding trailer physical bounds:', {
+        count: quarantinedActiveItems.length,
+        items: quarantinedActiveItems.map(q => ({
+          shipmentId: q.item.shipmentId,
+          position: { x: q.item.x, y: q.item.y, z: q.item.z },
+          dimensions: { dx: q.item.dx, dy: q.item.dy, dz: q.item.dz },
+          violations: q.violations
+        })),
+        truck: { length: truckLength, width: truckWidth, height: truckHeight }
+      });
+    }
+  }, [quarantinedActiveItems, truckLength, truckWidth, truckHeight]);
+
   // ── 5. Segment Telemetry Metrics ──
   const currentTotalVolume = useMemo(() => {
-    return activeItems.reduce((sum, it) => sum + it.volume, 0);
-  }, [activeItems]);
+    return physicallyValidActiveItems.reduce((sum, it) => sum + it.volume, 0);
+  }, [physicallyValidActiveItems]);
 
   const currentTotalWeight = useMemo(() => {
-    return activeItems.reduce((sum, it) => sum + it.weight, 0);
-  }, [activeItems]);
+    return physicallyValidActiveItems.reduce((sum, it) => sum + it.weight, 0);
+  }, [physicallyValidActiveItems]);
 
   const volumeUtilizationPct = truckVolume > 0 ? ((currentTotalVolume / truckVolume) * 100).toFixed(1) : 0;
   const weightUtilizationPct = truckWeight > 0 ? ((currentTotalWeight / truckWeight) * 100).toFixed(1) : 0;
@@ -291,11 +327,11 @@ const OperationalLoadVisualizer = ({
 
     scene.add(truckGroup);
 
-    // G. 3D Cargo Boxes Placement
+    // G. 3D Cargo Boxes Placement (Strictly Validated Packages Only)
     const cargoGroup = new THREE.Group();
     const meshes = [];
 
-    activeItems.forEach((item) => {
+    physicallyValidActiveItems.forEach((item) => {
       const palette = DESTINATION_PALETTES[item.destColorIndex % DESTINATION_PALETTES.length];
       const isSelected = selectedItem?.shipmentId === item.shipmentId;
       const isConflict = validation.accessibilityConflicts.some(c => c.blockedItem === item.shipmentId);
@@ -413,7 +449,7 @@ const OperationalLoadVisualizer = ({
       cancelAnimationFrame(animId);
       renderer.dispose();
     };
-  }, [viewMode, activeItems, selectedItem, showDimensions, showAccessPath, truckLength, truckWidth, truckHeight, validation]);
+  }, [viewMode, physicallyValidActiveItems, selectedItem, showDimensions, showAccessPath, truckLength, truckWidth, truckHeight, validation]);
 
   // ── Mouse & Orbit Controls ──
   const handleMouseDown = (e) => {
@@ -613,6 +649,28 @@ const OperationalLoadVisualizer = ({
         </div>
       )}
 
+      {/* ── OPERATIONAL QUARANTINE WARNING BANNER ── */}
+      {quarantinedActiveItems.length > 0 && (
+        <div className="p-4 bg-amber-950/70 border border-amber-500/60 rounded-2xl flex items-start gap-3 shadow-lg">
+          <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+          <div className="text-xs space-y-1">
+            <h4 className="font-bold text-amber-200">
+              {quarantinedActiveItems.length} package(s) exceeded truck physical boundaries and were excluded from rendering
+            </h4>
+            <p className="text-amber-300/90 text-[11px]">
+              To prevent physical corruption and packages extending outside trailer doors, quarantined items are excluded from the 3D Digital Twin and 2D CAD views.
+            </p>
+            <div className="flex flex-wrap gap-2 pt-1">
+              {quarantinedActiveItems.map(q => (
+                <span key={q.item.shipmentId} className="inline-flex items-center px-2 py-0.5 rounded-md font-mono text-[10px] bg-amber-900/60 text-amber-200 border border-amber-600/50">
+                  {q.item.shipmentId}: {q.violations.map(v => `${v.boundary} (${v.axis}) +${v.overflow}m`).join(', ')}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── MAIN VIEWPORT (3D DIGITAL TWIN OR 2D CAD SCHEMATIC) ── */}
       {!isUnavailable && viewMode === '3D' ? (
         <div className="relative w-full h-[540px] bg-slate-950 rounded-2xl overflow-hidden border border-slate-800 shadow-inner">
@@ -637,7 +695,13 @@ const OperationalLoadVisualizer = ({
               <span className="w-2 h-2 rounded-full bg-emerald-400" />
               <span>LOCKED PLAN: {canonicalItems.length} Pkgs</span>
               <span className="text-slate-500">•</span>
-              <span>ONBOARD: {activeItems.length} Pkgs</span>
+              <span>ONBOARD: {physicallyValidActiveItems.length} Pkgs</span>
+              {quarantinedActiveItems.length > 0 && (
+                <>
+                  <span className="text-slate-500">•</span>
+                  <span className="text-red-400 font-bold">QUARANTINED: {quarantinedActiveItems.length} Pkgs</span>
+                </>
+              )}
               {canonicalItems.length > activeItems.length && (
                 <>
                   <span className="text-slate-500">•</span>

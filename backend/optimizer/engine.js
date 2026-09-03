@@ -1,5 +1,5 @@
 import { OPTIMIZER_VERSION } from './constants.js';
-import { normalizeAndValidateInput } from './validator.js';
+import { normalizeAndValidateInput, validatePackageWithinTruck } from './validator.js';
 import { OptimizationSolver } from './localSearch.js';
 import { SpatialEngine } from './spatialEngine.js';
 
@@ -82,7 +82,42 @@ export const generateLoadPlan = (input) => {
   const solver = new OptimizationSolver(truck, route, candidateShipments, currentLoad, config);
   const solution = solver.solve();
 
-  // Combine invalid shipments with solver unassigned items
+  // Final Physical Bounding-Box Verification Pass:
+  // Every assignment committed to the solution MUST satisfy the physical truck envelope
+  const verifiedAssignments = [];
+  const postValidationUnassigned = [];
+
+  for (const assign of solution.assignments) {
+    const geoCheck = validatePackageWithinTruck({
+      position: assign.position,
+      dimensions: assign.dimensions || { dx: assign.dx, dy: assign.dy, dz: assign.dz },
+      truckDimensions: truck.dimensions
+    });
+
+    if (geoCheck.valid) {
+      verifiedAssignments.push(assign);
+    } else {
+      const violationDetail = geoCheck.violations
+        .map(v => `${v.axis} (${v.boundary}): ${v.actual}m > ${v.limit}m (overflow: ${v.overflow}m)`)
+        .join('; ');
+      postValidationUnassigned.push({
+        shipmentId: assign.shipmentId,
+        bookingId: assign.bookingId,
+        volume: assign.volume,
+        weight: assign.weight,
+        pickup: assign.pickup,
+        delivery: assign.delivery,
+        priority: assign.priority,
+        reason: `PACKAGE_OUTSIDE_TRUCK_BOUNDARY: ${violationDetail}`,
+        bottleneck: null
+      });
+      warnings.push(`CRITICAL: Shipment ${assign.shipmentId} rejected post-optimization due to physical boundary violation: ${violationDetail}`);
+    }
+  }
+
+  solution.assignments = verifiedAssignments;
+
+  // Combine invalid shipments with solver unassigned items and boundary rejections
   const allUnassigned = [
     ...invalidShipments.map(inv => ({
       shipmentId: inv.item.shipmentId,
@@ -95,7 +130,8 @@ export const generateLoadPlan = (input) => {
       reason: inv.reason,
       bottleneck: null
     })),
-    ...solution.unassigned
+    ...solution.unassigned,
+    ...postValidationUnassigned
   ];
 
   // Step 9: Final Feasibility Verification
