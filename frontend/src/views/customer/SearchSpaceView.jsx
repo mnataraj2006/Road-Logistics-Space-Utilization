@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import {
   Search, Truck, ShieldCheck, MapPin, Calendar, Box,
   AlertCircle, CheckCircle2, ArrowRight, Zap, RefreshCw, Layers
@@ -18,6 +19,7 @@ const SearchSpaceView = () => {
   const [serviceTier, setServiceTier] = useState('STANDARD');
 
   const [loading, setLoading] = useState(false);
+  const [bookingTruckId, setBookingTruckId] = useState(null);
   const [searchResults, setSearchResults] = useState([]);
   const [error, setError] = useState(null);
   const [bookingSuccess, setBookingSuccess] = useState(null);
@@ -49,10 +51,11 @@ const SearchSpaceView = () => {
         }
       );
 
-      setSearchResults(response.data.availableVehicles || []);
+      setSearchResults(response.data.results || []);
     } catch (err) {
       console.error('Capacity search error:', err);
       setError(err.response?.data?.message || 'Failed to search available truck space.');
+      setSearchResults([]);
     } finally {
       setLoading(false);
     }
@@ -64,6 +67,7 @@ const SearchSpaceView = () => {
 
   const handleBookSpace = async (truckResult) => {
     setLoading(true);
+    setBookingTruckId(truckResult.vehicleId);
     setError(null);
     setBookingSuccess(null);
 
@@ -71,7 +75,7 @@ const SearchSpaceView = () => {
       const token = localStorage.getItem('token');
       const payload = {
         vehicleId: truckResult.vehicleId,
-        routeId: truckResult.routeId,
+        routeId: truckResult.route?.routeId || truckResult.routeLane || truckResult.routeId,
         pickup,
         delivery,
         date,
@@ -88,21 +92,42 @@ const SearchSpaceView = () => {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
 
+      const bkg = response.data.booking || {};
+      const confirmedBookingId = response.data.bookingId || bkg.bookingId;
+      const confirmedShipmentId = response.data.shipmentId || response.data.shipment?.shipmentId || bkg.shipmentId;
+      const confirmedPrice = bkg.price ?? bkg.revenue ?? truckResult.pricing?.finalPrice;
+      const confirmedStatus = bkg.status || 'ALLOCATED';
+
       setBookingSuccess({
-        bookingId: response.data.bookingId,
-        vehicleId: truckResult.vehicleId,
-        routeId: truckResult.routeId,
-        price: response.data.booking?.price || truckResult.pricing?.finalPrice,
-        pickup,
-        delivery
+        bookingId: confirmedBookingId,
+        shipmentId: confirmedShipmentId,
+        vehicleId: bkg.vehicleId || truckResult.vehicleId,
+        routeId: bkg.routeId || truckResult.route?.routeId || truckResult.routeLane || truckResult.routeId,
+        pickup: bkg.fromStop || pickup,
+        delivery: bkg.toStop || delivery,
+        volume: bkg.volume || parseFloat(volume),
+        weight: bkg.weight || parseFloat(weight),
+        status: confirmedStatus,
+        price: confirmedPrice,
+        createdAt: bkg.createdAt || new Date().toISOString()
       });
+
+      // Reset appropriate consignment form fields on successful confirmation
+      setVolume('15');
+      setWeight('3000');
+      setLength('2.0');
+      setWidth('1.2');
+      setHeight('1.5');
+      setFragile(false);
 
       // Refresh search capacity
       handleSearch();
     } catch (err) {
       console.error('Booking commit error:', err);
       setError(err.response?.data?.message || 'Failed to book space on the selected truck.');
+      setBookingSuccess(null);
     } finally {
+      setBookingTruckId(null);
       setLoading(false);
     }
   };
@@ -122,25 +147,60 @@ const SearchSpaceView = () => {
 
       {/* Success Notification */}
       {bookingSuccess && (
-        <div className="bg-emerald-50 border border-emerald-300 text-emerald-900 rounded-2xl p-5 shadow-xs flex items-start justify-between">
-          <div className="flex items-start gap-3">
-            <CheckCircle2 className="w-6 h-6 text-emerald-600 shrink-0 mt-0.5" />
+        <div className="bg-emerald-50 border border-emerald-300 text-emerald-900 rounded-2xl p-6 shadow-sm space-y-3 animate-fadeIn">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <CheckCircle2 className="w-6 h-6 text-emerald-600 shrink-0 mt-0.5" />
+              <div>
+                <h4 className="text-sm font-black text-emerald-950">
+                  Capacity Reservation Confirmed!
+                </h4>
+                <p className="text-xs text-emerald-800 font-semibold mt-0.5">
+                  Your freight space has been officially reserved and locked into active fleet transit.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setBookingSuccess(null)}
+              className="text-xs font-bold text-emerald-800 hover:text-emerald-950 bg-emerald-100 hover:bg-emerald-200 px-3 py-1.5 rounded-lg border-none cursor-pointer transition-colors"
+            >
+              Dismiss
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3 border-t border-emerald-200 text-xs font-semibold">
             <div>
-              <h4 className="text-sm font-bold text-emerald-900">
-                Capacity Reservation Confirmed!
-              </h4>
-              <p className="text-xs text-emerald-700 mt-1">
-                Booking ID: <span className="font-mono font-bold">{bookingSuccess.bookingId}</span> | Truck:{' '}
-                <span className="font-bold">{bookingSuccess.vehicleId}</span> | Hop: {bookingSuccess.pickup} → {bookingSuccess.delivery} | Price: ₹{bookingSuccess.price}
-              </p>
+              <span className="text-[10px] text-emerald-700 uppercase font-black tracking-wider block">Booking ID</span>
+              <span className="font-mono text-sm font-black text-emerald-950">{bookingSuccess.bookingId}</span>
+            </div>
+            <div>
+              <span className="text-[10px] text-emerald-700 uppercase font-black tracking-wider block">Shipment ID</span>
+              <span className="font-mono text-sm font-black text-emerald-950">{bookingSuccess.shipmentId || 'N/A'}</span>
+            </div>
+            <div>
+              <span className="text-[10px] text-emerald-700 uppercase font-black tracking-wider block">Truck & Route</span>
+              <span className="font-bold text-emerald-950">{bookingSuccess.vehicleId} • {bookingSuccess.pickup} → {bookingSuccess.delivery}</span>
+            </div>
+            <div>
+              <span className="text-[10px] text-emerald-700 uppercase font-black tracking-wider block">Confirmed Price</span>
+              <span className="text-base font-black text-emerald-950">₹{bookingSuccess.price?.toLocaleString()}</span>
             </div>
           </div>
-          <button
-            onClick={() => setBookingSuccess(null)}
-            className="text-xs font-bold text-emerald-800 hover:text-emerald-950 bg-emerald-100 px-3 py-1.5 rounded-lg border-none cursor-pointer"
-          >
-            Dismiss
-          </button>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+            <div className="flex items-center gap-3 text-xs text-emerald-800 font-bold">
+              <span>Status: <strong className="text-emerald-950 uppercase">{bookingSuccess.status}</strong></span>
+              <span>•</span>
+              <span>Cargo: <strong>{bookingSuccess.volume} m³ ({bookingSuccess.weight} kg)</strong></span>
+            </div>
+            <Link
+              to="/customer/bookings"
+              className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black shadow-sm transition no-underline cursor-pointer"
+            >
+              <span>View in My Bookings</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </Link>
+          </div>
         </div>
       )}
 
@@ -343,7 +403,7 @@ const SearchSpaceView = () => {
           </span>
         </div>
 
-        {searchResults.length === 0 && !loading ? (
+        {searchResults.length === 0 && !loading && !error ? (
           <div className="bg-white rounded-2xl border border-gray-200 p-8 text-center space-y-2">
             <AlertCircle className="w-8 h-8 text-gray-400 mx-auto" />
             <h4 className="text-sm font-bold text-gray-800">No Eligible Trucks with Sufficient Capacity</h4>
@@ -373,7 +433,9 @@ const SearchSpaceView = () => {
 
                   <p className="text-xs font-semibold text-gray-600 flex items-center gap-1.5">
                     <MapPin className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                    <span>Route: {truck.routeLane} ({truck.routeStops?.join(' → ')})</span>
+                    <span>
+                      Route: {truck.route?.routeId || truck.routeLane || 'Standard Lane'} ({truck.route?.stops ? truck.route.stops.join(' → ') : (truck.routeStops ? truck.routeStops.join(' → ') : `${pickup} → ${delivery}`)})
+                    </span>
                   </p>
 
                   {/* Headroom Specs */}
@@ -388,7 +450,7 @@ const SearchSpaceView = () => {
                     </span>
                     <span className="text-gray-700">
                       Occupied Segments:{' '}
-                      <strong className="text-gray-900">{truck.occupiedSegments?.length || 1} segments</strong>
+                      <strong className="text-gray-900">{truck.relevantSegments?.length || truck.occupiedSegments?.length || 1} segments</strong>
                     </span>
                   </div>
                 </div>
@@ -400,20 +462,29 @@ const SearchSpaceView = () => {
                       Deterministic Quote
                     </span>
                     <span className="text-xl font-black text-gray-900">
-                      ₹{truck.pricing?.finalPrice?.toLocaleString() || truck.pricing?.basePrice?.toLocaleString() || '1,800'}
+                      ₹{(truck.pricing?.finalPrice ?? truck.pricing?.basePrice ?? truck.estimatedPrice ?? 0).toLocaleString()}
                     </span>
                     <span className="text-[10px] text-gray-500 block">
-                      Rule: {truck.pricing?.pricingRuleVersion || 'v2.1'}
+                      Rule: {truck.pricing?.pricingRuleVersion || 'v2.1-DETERMINISTIC'}
                     </span>
                   </div>
 
                   <button
                     onClick={() => handleBookSpace(truck)}
-                    disabled={loading}
+                    disabled={loading || bookingTruckId !== null}
                     className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black shadow-sm transition cursor-pointer border-none disabled:opacity-50"
                   >
-                    <span>Book Space</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
+                    {bookingTruckId === truck.vehicleId ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Reserving Space...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>Book Space</span>
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </>
+                    )}
                   </button>
                 </div>
               </div>

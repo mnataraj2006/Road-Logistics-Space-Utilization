@@ -497,16 +497,17 @@ export const getBookingTrends = async (req, res) => {
       }
       
       const record = formattedMap.get(date);
-      if (status === 'Completed') {
-        record.completed = item.count;
-        record.volume = parseFloat(item.volume.toFixed(1));
-        record.revenue = item.revenue;
-      } else if (status === 'Cancelled') {
-        record.cancelled = item.count;
-      } else if (status === 'Pending') {
-        record.completed += item.count;
-        record.volume += parseFloat(item.volume.toFixed(1));
-        record.revenue += item.revenue;
+      const normStatus = (status || '').toUpperCase();
+      if (['COMPLETED', 'DELIVERED'].includes(normStatus)) {
+        record.completed = (record.completed || 0) + item.count;
+        record.volume = parseFloat(((record.volume || 0) + Number(item.volume || 0)).toFixed(1));
+        record.revenue = (record.revenue || 0) + Number(item.revenue || 0);
+      } else if (['CANCELLED', 'CANCELED'].includes(normStatus)) {
+        record.cancelled = (record.cancelled || 0) + item.count;
+      } else {
+        record.completed = (record.completed || 0) + item.count;
+        record.volume = parseFloat(((record.volume || 0) + Number(item.volume || 0)).toFixed(1));
+        record.revenue = (record.revenue || 0) + Number(item.revenue || 0);
       }
     });
 
@@ -556,7 +557,7 @@ export const getDashboardKPIs = async (req, res) => {
       }
     ]);
 
-    let vehicleFilter = { status: 'Active' };
+    let vehicleFilter = { status: { $in: ['Active', 'AVAILABLE', 'ASSIGNED', 'IN_TRANSIT'] } };
     let routeFilter = {};
     if (req.user && req.user.role === 'logistics_manager' && req.user.carrierId) {
       vehicleFilter.carrierId = req.user.carrierId;
@@ -571,7 +572,7 @@ export const getDashboardKPIs = async (req, res) => {
     const vehicleMap = new Map(vehicles.map(v => [v.vehicleId, v]));
     const routeMap = new Map(routes.map(r => [r.routeId, r]));
 
-    let tripMatchFilter = { date: { $gte: thirtyDaysAgo }, status: { $ne: 'Cancelled' } };
+    let tripMatchFilter = { date: { $gte: thirtyDaysAgo }, status: { $nin: ['Cancelled', 'CANCELLED'] } };
     if (req.user && (req.user.role === 'customer' || req.user.role === 'shipper')) {
       tripMatchFilter.shipperId = req.user.username;
     } else if (req.user && req.user.role === 'logistics_manager' && req.user.carrierId) {
@@ -971,9 +972,13 @@ export const deleteBooking = async (req, res) => {
       });
     }
 
-    if (booking.shipment) {
-      await Shipment.deleteOne({ _id: booking.shipment });
-    }
+    await Shipment.deleteMany({
+      $or: [
+        { _id: booking.shipment },
+        { shipmentId: booking.shipmentId },
+        { shipmentId: `SHP-${booking.bookingId}` }
+      ].filter(c => Object.values(c)[0] != null)
+    });
     await Booking.deleteOne({ _id: booking._id });
 
     res.json({ success: true, message: `Consignment ${booking.bookingId} deleted successfully.` });

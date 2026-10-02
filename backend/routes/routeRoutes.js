@@ -7,17 +7,15 @@ import {
   updateRoute,
   deleteRoute
 } from '../controllers/routeController.js';
-import { protect } from '../middleware/auth.js';
+import { protect, authorizeRoles } from '../middleware/auth.js';
 
 const router = express.Router();
 
 router.get('/', protect, getRoutes);
-router.post('/', protect, createRoute);
-router.get('/analytics/performance', protect, getRoutePerformance);
+router.post('/', protect, authorizeRoles('logistics_manager', 'admin'), createRoute);
+router.get('/analytics/performance', protect, authorizeRoles('logistics_manager', 'admin'), getRoutePerformance);
 router.get('/:id', protect, getRouteById);
-router.put('/:id', protect, updateRoute);
-router.delete('/:id', protect, deleteRoute);
-
-
+router.put('/:id', protect, authorizeRoles('logistics_manager', 'admin'), updateRoute);
+router.delete('/:id', protect, authorizeRoles('logistics_manager', 'admin'), deleteRoute);
 
 export default router;

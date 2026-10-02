@@ -189,7 +189,7 @@ const runComprehensiveTests = async () => {
     console.log('==================================================');
     // Truck expects Bangalore (stop #2). Scan Hyderabad (stop #3) QR.
     res = mockRes();
-    await verifyStop(mockReq({}, { vehicleId, qrToken: 'STPTKN-SC1-HYDERABAD' }), res);
+    await verifyStop(mockReq({}, { vehicleId, stopId: 'STP-3', qrToken: 'STPTKN-SC1-HYDERABAD' }), res);
     console.log('Wrong Stop Response status:', res.statusCode);
     console.log('Wrong Stop Response message:', res.data?.message);
 
@@ -203,7 +203,7 @@ const runComprehensiveTests = async () => {
     console.log('==================================================');
     // Verify Bangalore once first
     res = mockRes();
-    await verifyStop(mockReq({}, { vehicleId, qrToken: 'STPTKN-SC1-BANGALORE' }), res);
+    await verifyStop(mockReq({}, { vehicleId, stopId: 'STP-2', qrToken: 'STPTKN-SC1-BANGALORE' }), res);
     console.log('Bangalore Stop Scan #1 status:', res.data?.message);
     
     // Check P1 delivered, P2 loaded
@@ -214,7 +214,7 @@ const runComprehensiveTests = async () => {
 
     // Scan Bangalore second time (Duplicate scan)
     res = mockRes();
-    await verifyStop(mockReq({}, { vehicleId, qrToken: 'STPTKN-SC1-BANGALORE' }), res);
+    await verifyStop(mockReq({}, { vehicleId, stopId: 'STP-2', qrToken: 'STPTKN-SC1-BANGALORE' }), res);
     console.log('Duplicate Bangalore Stop Response status:', res.statusCode);
     console.log('Duplicate Bangalore Stop Response message:', res.data?.message);
 
@@ -250,7 +250,7 @@ const runComprehensiveTests = async () => {
 
     // Scan Hyderabad QR
     res = mockRes();
-    await verifyStop(mockReq({}, { vehicleId, qrToken: 'STPTKN-SC1-HYDERABAD' }), res);
+    await verifyStop(mockReq({}, { vehicleId, stopId: 'STP-3', qrToken: 'STPTKN-SC1-HYDERABAD' }), res);
     console.log('Capacity Overload Response status:', res.statusCode);
     console.log('Capacity Overload Response message:', res.data?.message);
     console.log('Capacity Overload Details:', res.data?.details);
@@ -278,7 +278,7 @@ const runComprehensiveTests = async () => {
     console.log('==================================================');
     // Scan Hyderabad QR again (now valid)
     res = mockRes();
-    await verifyStop(mockReq({}, { vehicleId, qrToken: 'STPTKN-SC1-HYDERABAD' }), res);
+    await verifyStop(mockReq({}, { vehicleId, stopId: 'STP-3', qrToken: 'STPTKN-SC1-HYDERABAD' }), res);
     console.log('Hyderabad Stop Response:', res.data?.message);
     
     p2Check = await Booking.findOne({ bookingId: 'P2-BLR-HYD' });
@@ -288,7 +288,7 @@ const runComprehensiveTests = async () => {
 
     // Scan Delhi QR (Final Stop)
     res = mockRes();
-    await verifyStop(mockReq({}, { vehicleId, qrToken: 'STPTKN-SC1-DELHI' }), res);
+    await verifyStop(mockReq({}, { vehicleId, stopId: 'STP-4', qrToken: 'STPTKN-SC1-DELHI' }), res);
     console.log('Delhi Final Stop Response:', res.data?.message);
 
     p3Check = await Booking.findOne({ bookingId: 'P3-CHE-DEL' });
@@ -367,7 +367,7 @@ const runComprehensiveTests = async () => {
 
     // Verify Final Stop (Delhi)
     res = mockRes();
-    await verifyStop(mockReq({}, { vehicleId: vehicleId7, qrToken: 'TKN7-DEL' }), res);
+    await verifyStop(mockReq({}, { vehicleId: vehicleId7, stopId: 'S7-2', qrToken: 'TKN7-DEL' }), res);
     console.log('Undelivered Packages Final Stop Response status:', res.statusCode);
     console.log('Undelivered Packages Final Stop Response message:', res.data?.message);
 

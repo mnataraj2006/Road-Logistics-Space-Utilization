@@ -13,11 +13,21 @@ import {
   dispatchPlannedTrip,
   cancelTripController,
   previewDynamicReoptimizationController,
-  applyDynamicReoptimizationController
+  applyDynamicReoptimizationController,
+  previewFleetOptimization,
+  generateFleetLoadPlans,
+  getAllLoadPlans
 } from '../controllers/tripController.js';
-import { protect } from '../middleware/auth.js';
+import { protect, authorizeRoles } from '../middleware/auth.js';
 
 const router = express.Router();
+
+// Archive of all versioned load plans (must be before /:tripId)
+router.get('/load-plans/archive', protect, authorizeRoles('logistics_manager', 'admin'), getAllLoadPlans);
+
+// Fleet optimization (must be before /:tripId to avoid route shadowing)
+router.post('/fleet-optimize/preview', protect, previewFleetOptimization);
+router.post('/fleet-optimize/generate', protect, generateFleetLoadPlans);
 
 // Trip management
 router.route('/')

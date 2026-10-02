@@ -79,9 +79,10 @@ const DriverDashboard = () => {
     }
   };
 
-  const handleVerifyQR = async (tokenToVerify) => {
+  const handleVerifyQR = async (tokenToVerify, stopIdToVerify) => {
     if (!vehicle) return;
     const token = tokenToVerify || scanToken;
+    const stopId = stopIdToVerify || expectedStop?.stopId;
     if (!token) {
       setError("Please enter or select a stop QR token to verify.");
       return;
@@ -91,7 +92,8 @@ const DriverDashboard = () => {
     setSuccessMsg(null);
     try {
       const { data } = await api.post(`/vehicles/${vehicle.vehicleId}/verify-stop`, {
-        qrToken: token
+        qrToken: token,
+        stopId: stopId
       });
       setSuccessMsg(data.message);
       setScanToken('');

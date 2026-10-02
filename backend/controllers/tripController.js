@@ -8,7 +8,7 @@ import Shipment from '../models/Shipment.js';
 import Booking from '../models/Booking.js';
 import LoadPlan from '../models/LoadPlan.js';
 import LoadAssignment from '../models/LoadAssignment.js';
-import { generateLoadPlan, validatePackageWithinTruck } from '../optimizer/index.js';
+import { generateLoadPlan, optimizeMultiTruckFleet, validatePackageWithinTruck, resolveAuthoritativeDimensions, resolveAuthoritativePosition, resolveAuthoritativeTruckDimensions } from '../optimizer/index.js';
 import { SpatialEngine } from '../optimizer/spatialEngine.js';
 import { dispatchTruck } from './transitController.js';
 import { getTenantFilter } from '../middleware/auth.js';
@@ -24,15 +24,16 @@ const norm = (s) => (s ? String(s).trim().toLowerCase() : '');
 export const resolveAuthoritativeTruck = (trip, liveVehicle) => {
   if (['DISPATCHED', 'IN_TRANSIT', 'AT_STOP', 'OPERATIONS_IN_PROGRESS', 'STOP_COMPLETED', 'COMPLETED'].includes(trip.status) && trip.vehicleSnapshot?.capacityVolume > 0) {
     const snap = trip.vehicleSnapshot;
+    const authDims = resolveAuthoritativeTruckDimensions(snap);
     return {
       vehicleId: snap.vehicleId || trip.vehicleId,
       type: snap.type || 'Heavy Truck',
-      capacityVolume: Number(snap.capacityVolume) || 93.3,
-      capacityWeight: Number(snap.capacityWeight) || 20000,
+      capacityVolume: authDims.capacityVolume,
+      capacityWeight: authDims.capacityWeight,
       dimensions: {
-        length: Number(snap.dimensions?.length || snap.interiorLength || 13.6),
-        width: Number(snap.dimensions?.width || snap.interiorWidth || 2.45),
-        height: Number(snap.dimensions?.height || snap.interiorHeight || 2.8)
+        length: authDims.length,
+        width: authDims.width,
+        height: authDims.height
       },
       ratePerCbm: snap.ratePerCbm || 150,
       ratePerKg: snap.ratePerKg || 5
@@ -40,21 +41,17 @@ export const resolveAuthoritativeTruck = (trip, liveVehicle) => {
   }
 
   const veh = liveVehicle || trip.vehicle || {};
-  const len = Number(veh.dimensions?.length || veh.interiorLength || 13.6);
-  const wid = Number(veh.dimensions?.width || veh.interiorWidth || 2.45);
-  const hgt = Number(veh.dimensions?.height || veh.interiorHeight || 2.8);
-  const capVol = Number(veh.capacityVolume || parseFloat((len * wid * hgt).toFixed(2)));
-  const capWt = Number(veh.capacityWeight || 20000);
+  const authDims = resolveAuthoritativeTruckDimensions(veh);
 
   return {
     vehicleId: veh.vehicleId || trip.vehicleId,
     type: veh.type || 'Heavy Truck',
-    capacityVolume: capVol,
-    capacityWeight: capWt,
+    capacityVolume: authDims.capacityVolume,
+    capacityWeight: authDims.capacityWeight,
     dimensions: {
-      length: len,
-      width: wid,
-      height: hgt
+      length: authDims.length,
+      width: authDims.width,
+      height: authDims.height
     },
     ratePerCbm: veh.ratePerCbm || 150,
     ratePerKg: veh.ratePerKg || 5
@@ -210,7 +207,31 @@ export const getTripById = async (req, res) => {
 
     if (!trip) return res.status(404).json({ success: false, message: `Trip ${tripId} not found.` });
 
-    const stops = await TripStop.find({ tripId }).sort({ sequence: 1 });
+    let stops = await TripStop.find({ tripId }).sort({ sequence: 1 });
+    if (!stops || stops.length === 0) {
+      const routeStops = (trip.route?.stopsDetails && trip.route.stopsDetails.length > 0)
+        ? trip.route.stopsDetails
+        : [trip.route?.source, ...(trip.route?.stops || []), trip.route?.destination].filter(Boolean).map((loc, idx) => ({
+            stopId: `STP-${idx + 1}`,
+            sequenceNumber: idx + 1,
+            locationName: loc,
+            status: idx <= (trip.currentStopIndex || 0) ? 'Completed' : idx === (trip.currentStopIndex || 0) + 1 ? 'Ready' : 'Upcoming'
+          }));
+
+      stops = routeStops.map((rs, idx) => ({
+        tripId: trip.tripId,
+        stopId: rs.stopId || `STP-${idx + 1}`,
+        sequence: rs.sequenceNumber || idx + 1,
+        location: rs.locationName || rs.location || rs,
+        locationName: rs.locationName || rs.location || rs,
+        verificationStatus: (rs.status === 'Completed' || idx <= (trip.currentStopIndex || 0))
+          ? 'COMPLETED'
+          : (rs.status === 'Ready' || idx === (trip.currentStopIndex || 0) + 1)
+          ? 'READY'
+          : 'UPCOMING',
+        qrToken: rs.qrToken || `STPTKN-${trip.tripId}-${idx + 1}`
+      }));
+    }
     
     // Find authoritative active / approved / locked / latest LoadPlan
     const latestPlan = await LoadPlan.findOne({
@@ -246,7 +267,7 @@ export const getTripById = async (req, res) => {
         const origStop = a.segmentRange?.fromStop || s.pickupStop || b.fromStop || 'Chennai';
         
         let liveStatus = 'ON_TRUCK';
-        if (s.status === 'DELIVERED' || b.status === 'DELIVERED' || a.status === 'DELIVERED') {
+        if (s.status === 'DELIVERED' || b.status === 'DELIVERED' || a.status === 'DELIVERED' || trip.status === 'COMPLETED') {
           liveStatus = 'DELIVERED';
         } else if (norm(destStop) === norm(currentCity)) {
           liveStatus = 'READY_FOR_UNLOAD';
@@ -338,7 +359,7 @@ export const getTripById = async (req, res) => {
 
           if (placement) {
             fallbackSpatial.placeBox(s, placement);
-            const isDelivered = s.status === 'DELIVERED';
+            const isDelivered = s.status === 'DELIVERED' || trip.status === 'COMPLETED';
             const isReadyUnload = !isDelivered && norm(s.deliveryStop) === norm(currentCity);
             const lStatus = isDelivered ? 'DELIVERED' : isReadyUnload ? 'READY_FOR_UNLOAD' : 'ON_TRUCK';
 
@@ -427,7 +448,7 @@ export const getCandidateShipmentsForTrip = async (req, res) => {
     // 1. Genuinely available/unallocated consignments ONLY
     // Must NOT be locked to ANY trip and must not be allocated to another trip
     const rawCandidates = await Shipment.find({
-      status: { $in: ['DRAFT', 'PENDING', 'BOOKED'] },
+      status: { $in: ['DRAFT', 'PENDING', 'BOOKED', 'ALLOCATED'] },
       isLocked: { $ne: true },
       $or: [
         { allocationStatus: { $in: ['AVAILABLE_FOR_OPTIMIZATION', 'PENDING', null] } },
@@ -460,6 +481,9 @@ export const getCandidateShipmentsForTrip = async (req, res) => {
           volume: s.volume,
           weight: s.weight,
           dimensions: { length: s.length, width: s.width, height: s.height },
+          length: s.length,
+          width: s.width,
+          height: s.height,
           fragile: s.fragile,
           stackable: s.stackable,
           priority: s.priority || 'STANDARD',
@@ -492,6 +516,20 @@ export const getCandidateShipmentsForTrip = async (req, res) => {
       isLocked: true
     }).sort({ priority: -1, requestedDate: 1 });
 
+    const activePlan = await LoadPlan.findOne({
+      tripId: trip.tripId,
+      status: { $in: ['APPROVED', 'LOCKED', 'ACTIVE', 'GENERATED'] }
+    }).sort({ isImmutable: -1, version: -1, createdAt: -1 });
+
+    let assignMap = new Map();
+    if (activePlan) {
+      const planAssignments = await LoadAssignment.find({ loadPlanId: activePlan.loadPlanId }).lean();
+      planAssignments.forEach(a => {
+        if (a.shipmentId) assignMap.set(a.shipmentId, a);
+        if (a.bookingId) assignMap.set(a.bookingId, a);
+      });
+    }
+
     const allocatedCargo = allocatedCargoDocs.map(s => {
       let phys = s.physicalStatus;
       if (!phys || phys === 'WAITING_AT_ORIGIN') {
@@ -511,7 +549,12 @@ export const getCandidateShipmentsForTrip = async (req, res) => {
       else if (phys === 'ONBOARD') physDisplay = 'ONBOARD';
       else if (phys === 'DELIVERED') physDisplay = 'DELIVERED';
 
+      const matchedAssign = assignMap.get(s.shipmentId) || assignMap.get(s.bookingId);
+      const aDims = matchedAssign ? resolveAuthoritativeDimensions(matchedAssign) : resolveAuthoritativeDimensions(s);
+      const aPos = matchedAssign ? resolveAuthoritativePosition(matchedAssign) : { x: 0, y: 0, z: 0 };
+
       return {
+        ...s.toObject(),
         shipmentId: s.shipmentId,
         bookingId: s.shipmentId,
         customer: s.shipperId || 'Shipper',
@@ -522,7 +565,27 @@ export const getCandidateShipmentsForTrip = async (req, res) => {
         unloadStop: s.deliveryStop,
         volume: s.volume,
         weight: s.weight,
-        dimensions: { length: s.length, width: s.width, height: s.height },
+        dx: aDims.dx,
+        dy: aDims.dy,
+        dz: aDims.dz,
+        length: aDims.dx,
+        width: aDims.dy,
+        height: aDims.dz,
+        dimensions: {
+          dx: aDims.dx,
+          dy: aDims.dy,
+          dz: aDims.dz,
+          length: aDims.dx,
+          width: aDims.dy,
+          height: aDims.dz
+        },
+        position: aPos,
+        x: aPos.x,
+        y: aPos.y,
+        z: aPos.z,
+        orientation: matchedAssign?.orientation || 'UPRIGHT_ORIGINAL',
+        loadingSequence: matchedAssign?.loadingSequence || 0,
+        unloadingSequence: matchedAssign?.unloadingSequence || 0,
         fragile: s.fragile,
         stackable: s.stackable,
         priority: s.priority || 'STANDARD',
@@ -558,9 +621,15 @@ export const getCandidateShipmentsForTrip = async (req, res) => {
       vehicle: authTruck,
       route: trip.route,
       stops,
-      candidatesCount: eligibleAtCurrentStop.length,
-      candidates: eligibleAtCurrentStop,
-      candidateShipments: eligibleAtCurrentStop,
+      candidatesCount: (trip.status === 'PLANNED' || currentStopIndex === 0)
+        ? (eligibleAtCurrentStop.length + futureOriginShipments.length)
+        : eligibleAtCurrentStop.length,
+      candidates: (trip.status === 'PLANNED' || currentStopIndex === 0)
+        ? [...eligibleAtCurrentStop, ...futureOriginShipments]
+        : eligibleAtCurrentStop,
+      candidateShipments: (trip.status === 'PLANNED' || currentStopIndex === 0)
+        ? [...eligibleAtCurrentStop, ...futureOriginShipments]
+        : eligibleAtCurrentStop,
       eligibleCandidates: eligibleAtCurrentStop,
       eligibleCount: eligibleAtCurrentStop.length,
       futureOriginShipments,
@@ -621,7 +690,7 @@ export const previewOptimization = async (req, res) => {
 
       let queryFilter = {
         $or: [
-          { status: { $in: ['DRAFT', 'PENDING', 'BOOKED'] }, isLocked: { $ne: true } },
+          { status: { $in: ['DRAFT', 'PENDING', 'BOOKED', 'ALLOCATED'] }, isLocked: { $ne: true } },
           { allocatedTripId: trip.tripId } // Allow re-evaluating this trip's cargo during preview
         ]
       };
@@ -771,10 +840,14 @@ export const generateTripLoadPlan = async (req, res) => {
       tripId,
       vehicleId: trip.vehicleId,
       routeId: trip.routeId,
+      organizationId: trip.organizationId || trip.vehicle?.organizationId || req.user?.organizationId,
+      logisticsCompanyName: trip.logisticsCompanyName || trip.vehicle?.logisticsCompanyName || req.user?.companyName || '',
+      carrierId: trip.carrierId || trip.vehicle?.carrierId || req.user?.carrierId || req.user?.username,
       version: nextVersion,
       optimizerVersion: optResult.algorithmVersion,
       strategyUsed: optResult.loadPlan.strategyUsed,
       generatedAt: new Date(),
+      executionTimeMs: optResult.executionTimeMs || 0,
       objectiveScore: optResult.objectiveScore,
       scoreBreakdown: optResult.scoreBreakdown,
       volumeUtilization: optResult.overallVolumeUtilization,
@@ -1010,6 +1083,7 @@ export const approveTripLoadPlan = async (req, res) => {
         version: nextVersion,
         status: 'UNDER_REVIEW',
         generatedAt: new Date(),
+        executionTimeMs: optResult.executionTimeMs || 0,
         volumeUtilization: optResult.overallVolumeUtilization || optResult.loadPlan?.volumeUtilization || 0,
         weightUtilization: optResult.overallWeightUtilization || optResult.loadPlan?.weightUtilization || 0,
         peakUtilization: {
@@ -1034,11 +1108,13 @@ export const approveTripLoadPlan = async (req, res) => {
       await plan.save({ session });
 
       for (const a of optResult.assignments) {
+        const aDims = resolveAuthoritativeDimensions(a);
+        const aPos = resolveAuthoritativePosition(a);
         const assignDoc = new LoadAssignment({
           loadPlan: plan._id,
           loadPlanId: plan.loadPlanId,
           shipmentId: a.shipmentId,
-          bookingId: a.bookingId,
+          bookingId: a.bookingId || a.shipmentId,
           customer: a.customer || '',
           priority: a.priority,
           fragile: a.fragile,
@@ -1047,14 +1123,26 @@ export const approveTripLoadPlan = async (req, res) => {
           loadingSequence: a.loadingSequence,
           unloadingSequence: a.unloadingSequence,
           dimensions: {
-            length: a.dimensions?.length || 0,
-            width: a.dimensions?.width || 0,
-            height: a.dimensions?.height || 0
+            dx: aDims.dx,
+            dy: aDims.dy,
+            dz: aDims.dz,
+            length: aDims.dx,
+            width: aDims.dy,
+            height: aDims.dz
           },
-          volume: a.volume,
-          weight: a.weight,
-          orientation: a.orientation,
-          position: a.position,
+          dx: aDims.dx,
+          dy: aDims.dy,
+          dz: aDims.dz,
+          length: aDims.dx,
+          width: aDims.dy,
+          height: aDims.dz,
+          volume: a.volume || parseFloat((aDims.dx * aDims.dy * aDims.dz).toFixed(3)) || 1.0,
+          weight: a.weight || 500,
+          orientation: a.orientation || 'UPRIGHT_ORIGINAL',
+          position: aPos,
+          x: aPos.x,
+          y: aPos.y,
+          z: aPos.z,
           obstructionScore: a.obstructionScore || 0,
           status: 'PROPOSED'
         });
@@ -1116,6 +1204,8 @@ export const approveTripLoadPlan = async (req, res) => {
 
     if (assignments.length === 0 && req.body.assignments && req.body.assignments.length > 0) {
       for (const a of req.body.assignments) {
+        const aDims = resolveAuthoritativeDimensions(a);
+        const aPos = resolveAuthoritativePosition(a);
         const assignDoc = new LoadAssignment({
           loadPlan: plan._id,
           loadPlanId: plan.loadPlanId,
@@ -1132,14 +1222,26 @@ export const approveTripLoadPlan = async (req, res) => {
           loadingSequence: a.loadingSequence || 0,
           unloadingSequence: a.unloadingSequence || 0,
           dimensions: {
-            length: a.dimensions?.length || a.dx || a.length || 1.2,
-            width: a.dimensions?.width || a.dy || a.width || 1.0,
-            height: a.dimensions?.height || a.dz || a.height || 1.2
+            dx: aDims.dx,
+            dy: aDims.dy,
+            dz: aDims.dz,
+            length: aDims.dx,
+            width: aDims.dy,
+            height: aDims.dz
           },
-          volume: a.volume || 1.0,
+          dx: aDims.dx,
+          dy: aDims.dy,
+          dz: aDims.dz,
+          length: aDims.dx,
+          width: aDims.dy,
+          height: aDims.dz,
+          volume: a.volume || parseFloat((aDims.dx * aDims.dy * aDims.dz).toFixed(3)) || 1.0,
           weight: a.weight || 500,
-          orientation: a.orientation || 'XYZ',
-          position: a.position || { x: a.x ?? 0, y: a.y ?? 0, z: a.z ?? 0 },
+          orientation: a.orientation || 'UPRIGHT_ORIGINAL',
+          position: aPos,
+          x: aPos.x,
+          y: aPos.y,
+          z: aPos.z,
           status: 'ASSIGNED'
         });
         await assignDoc.save({ session });
@@ -1151,6 +1253,30 @@ export const approveTripLoadPlan = async (req, res) => {
       const fromStop = assign.segmentRange?.fromStop || 'Chennai';
       const isOriginCurrent = norm(fromStop) === norm(trip.currentStop || 'Chennai');
       const physStatus = isOriginCurrent ? 'READY_TO_LOAD' : 'WAITING_AT_ORIGIN';
+
+      const aDims = resolveAuthoritativeDimensions(assign);
+      const aPos = resolveAuthoritativePosition(assign);
+
+      assign.dx = aDims.dx;
+      assign.dy = aDims.dy;
+      assign.dz = aDims.dz;
+      if (!assign.dimensions) assign.dimensions = {};
+      assign.dimensions.dx = aDims.dx;
+      assign.dimensions.dy = aDims.dy;
+      assign.dimensions.dz = aDims.dz;
+      assign.dimensions.length = aDims.dx;
+      assign.dimensions.width = aDims.dy;
+      assign.dimensions.height = aDims.dz;
+      assign.length = aDims.dx;
+      assign.width = aDims.dy;
+      assign.height = aDims.dz;
+      assign.x = aPos.x;
+      assign.y = aPos.y;
+      assign.z = aPos.z;
+      if (!assign.position) assign.position = {};
+      assign.position.x = aPos.x;
+      assign.position.y = aPos.y;
+      assign.position.z = aPos.z;
 
       assign.status = 'ASSIGNED';
       assign.physicalStatus = physStatus;
@@ -1269,7 +1395,7 @@ export const unlockTripLoadPlan = async (req, res) => {
       { allocatedTripId: trip.tripId },
       {
         $set: {
-          status: 'PENDING',
+          status: 'BOOKED',
           allocationStatus: 'AVAILABLE_FOR_OPTIMIZATION',
           isLocked: false,
           lockedAt: null,
@@ -1613,14 +1739,43 @@ export const cancelTripController = async (req, res) => {
       if (a.shipmentId) {
         await Shipment.updateOne(
           { shipmentId: a.shipmentId },
-          { status: 'PENDING' },
+          {
+            $set: {
+              status: 'BOOKED',
+              allocationStatus: 'AVAILABLE_FOR_OPTIMIZATION',
+              physicalStatus: 'WAITING_AT_ORIGIN',
+              isLocked: false,
+              lockedAt: null,
+              allocatedTripId: null,
+              allocatedLoadPlanId: null,
+              allocatedVehicleId: null,
+              allocatedAt: null,
+              assignedTripId: null,
+              assignedVehicleId: null,
+              vehicleId: null
+            }
+          },
           { session }
         );
       }
       if (a.bookingId) {
         await Booking.updateOne(
           { bookingId: a.bookingId },
-          { vehicleId: 'UNASSIGNED', status: 'PENDING' },
+          {
+            $set: {
+              vehicleId: 'UNASSIGNED',
+              assignedVehicleId: 'UNASSIGNED',
+              status: 'BOOKED',
+              allocationStatus: 'AVAILABLE_FOR_OPTIMIZATION',
+              isLocked: false,
+              lockedAt: null,
+              allocatedTripId: null,
+              allocatedLoadPlanId: null,
+              allocatedVehicleId: null,
+              allocatedAt: null,
+              assignedTripId: null
+            }
+          },
           { session }
         );
       }
@@ -1654,3 +1809,473 @@ export const cancelTripController = async (req, res) => {
   }
 };
 
+// ─── FLEET OPTIMIZATION ────────────────────────────────────────────────────────
+
+/**
+ * Builds the authoritative truck descriptor expected by the optimizer
+ * from a Mongoose Vehicle document (reuses resolveAuthoritativeTruckDimensions).
+ */
+const buildTruckDescriptor = (vehicle) => {
+  const authDims = resolveAuthoritativeTruckDimensions(vehicle);
+  return {
+    vehicleId:       vehicle.vehicleId,
+    type:            vehicle.type || 'Heavy Truck',
+    capacityVolume:  authDims.capacityVolume,
+    capacityWeight:  authDims.capacityWeight,
+    dimensions: {
+      length: authDims.length,
+      width:  authDims.width,
+      height: authDims.height
+    },
+    ratePerCbm: vehicle.ratePerCbm || 150,
+    ratePerKg:  vehicle.ratePerKg  || 5,
+    status:        vehicle.status,
+    transitStatus: vehicle.transitStatus
+  };
+};
+
+/**
+ * @desc  Preview fleet optimization — ZERO database mutations.
+ * @route POST /api/trips/fleet-optimize/preview
+ * @body  { vehicleIds: string[], shipmentIds?: string[], routeId: string, config?: object }
+ */
+export const previewFleetOptimization = async (req, res) => {
+  const startTime = Date.now();
+  try {
+    const { vehicleIds, shipmentIds, routeId, config } = req.body;
+
+    if (!Array.isArray(vehicleIds) || vehicleIds.length === 0)
+      return res.status(400).json({ success: false, message: 'Fleet optimization requires at least one vehicleId.' });
+    if (!routeId)
+      return res.status(400).json({ success: false, message: 'Fleet optimization requires a routeId.' });
+
+    const route = await Route.findOne({ routeId });
+    if (!route) return res.status(404).json({ success: false, message: `Route ${routeId} not found.` });
+
+    const vehicleDocs = await Vehicle.find({ vehicleId: { $in: vehicleIds } });
+    if (vehicleDocs.length === 0)
+      return res.status(404).json({ success: false, message: 'None of the specified vehicles were found.' });
+
+    const unavailableVehicles = [];
+    const availableTrucks = [];
+    const badStatuses = ['MAINTENANCE', 'INACTIVE', 'In Maintenance', 'Out of Service', 'IN_TRANSIT', 'DISPATCHED'];
+    for (const v of vehicleDocs) {
+      if (badStatuses.includes(v.status) || badStatuses.includes(v.transitStatus)) {
+        unavailableVehicles.push({ vehicleId: v.vehicleId, reason: `Status is '${v.status}' / transitStatus '${v.transitStatus}'.` });
+      } else {
+        availableTrucks.push(buildTruckDescriptor(v));
+      }
+    }
+
+    if (availableTrucks.length === 0)
+      return res.status(422).json({
+        success: false,
+        message: 'All specified vehicles are unavailable (in maintenance, dispatched, or inactive).',
+        unavailableVehicles
+      });
+
+    const stops = route.stopsDetails?.length > 1
+      ? route.stopsDetails.map(s => s.locationName)
+      : (route.stops?.length > 1 ? route.stops : [route.source, route.destination]);
+
+    let candidateShipmentDocs;
+    if (Array.isArray(shipmentIds) && shipmentIds.length > 0) {
+      const docs = await Shipment.find({ shipmentId: { $in: shipmentIds } });
+      const conflicted = docs.filter(s => s.isLocked && s.allocatedTripId);
+      if (conflicted.length > 0) {
+        const ids = conflicted.map(s => `${s.shipmentId} (Trip ${s.allocatedTripId})`).join(', ');
+        return res.status(409).json({ success: false, message: `Duplicate Allocation Conflict: [${ids}] already locked to another trip.` });
+      }
+      candidateShipmentDocs = docs;
+    } else {
+      candidateShipmentDocs = await Shipment.find({
+        status: { $in: ['DRAFT', 'PENDING', 'BOOKED'] },
+        isLocked: { $ne: true },
+        $and: [{ $or: [{ allocatedTripId: null }, { allocatedTripId: { $exists: false } }, { allocatedTripId: '' }] }]
+      });
+    }
+
+    if (candidateShipmentDocs.length === 0)
+      return res.status(422).json({
+        success: false,
+        message: 'No candidate shipments found for fleet optimization.',
+        availableTrucks: availableTrucks.map(t => t.vehicleId),
+        unavailableVehicles
+      });
+
+    const routeCompatible = [];
+    const routeIncompatible = [];
+    for (const s of candidateShipmentDocs) {
+      const pIdx = stops.findIndex(st => norm(st) === norm(s.pickupStop));
+      const dIdx = stops.findIndex(st => norm(st) === norm(s.deliveryStop));
+      if (pIdx !== -1 && dIdx !== -1 && pIdx < dIdx) {
+        routeCompatible.push({
+          shipmentId: s.shipmentId, bookingId: s.shipmentId,
+          customer: s.shipperId || '', cargoDescription: s.cargoDescription || '',
+          pickup: s.pickupStop, delivery: s.deliveryStop,
+          volume: s.volume, weight: s.weight,
+          dimensions: { length: s.length || 0, width: s.width || 0, height: s.height || 0 },
+          fragile: s.fragile, stackable: s.stackable,
+          allowRotation: s.allowRotation !== false, priority: s.priority || 'STANDARD'
+        });
+      } else {
+        routeIncompatible.push({ shipmentId: s.shipmentId, reason: `${s.pickupStop}→${s.deliveryStop} not on route ${routeId}.` });
+      }
+    }
+
+    const fleetResult = optimizeMultiTruckFleet({
+      trucks: availableTrucks, route, shipments: routeCompatible, config: config || {}
+    });
+
+    const totalCapacityVolume = availableTrucks.reduce((s, t) => s + t.capacityVolume, 0);
+    const totalCapacityWeight = availableTrucks.reduce((s, t) => s + t.capacityWeight, 0);
+    const totalAssignedVolume = fleetResult.truckPlans.reduce((s, p) =>
+      s + p.assignments.reduce((a, x) => a + (x.volume || 0), 0), 0);
+    const totalAssignedWeight = fleetResult.truckPlans.reduce((s, p) =>
+      s + p.assignments.reduce((a, x) => a + (x.weight || 0), 0), 0);
+    const totalAssigned = fleetResult.truckPlans.reduce((s, p) => s + p.assignments.length, 0);
+
+    res.json({
+      success: true,
+      preview: true,
+      routeId,
+      route,
+      truckPlans: fleetResult.truckPlans,
+      unassignedShipments: [...fleetResult.unassignedShipments, ...routeIncompatible],
+      summary: {
+        trucksRequested:        vehicleIds.length,
+        trucksAvailable:        availableTrucks.length,
+        trucksActivated:        fleetResult.trucksActivatedCount,
+        trucksIdle:             availableTrucks.length - fleetResult.trucksActivatedCount,
+        totalCargoItems:        routeCompatible.length,
+        totalAssigned,
+        totalUnassigned:        fleetResult.unassignedShipments.length + routeIncompatible.length,
+        isFullyAssigned:        fleetResult.isFullyAssigned && routeIncompatible.length === 0,
+        totalCapacityVolume:    parseFloat(totalCapacityVolume.toFixed(2)),
+        totalCapacityWeight,
+        totalAssignedVolume:    parseFloat(totalAssignedVolume.toFixed(2)),
+        totalAssignedWeight:    Math.round(totalAssignedWeight),
+        fleetVolumeUtilization: totalCapacityVolume > 0
+          ? parseFloat(((totalAssignedVolume / totalCapacityVolume) * 100).toFixed(1)) : 0,
+        fleetWeightUtilization: totalCapacityWeight > 0
+          ? parseFloat(((totalAssignedWeight / totalCapacityWeight) * 100).toFixed(1)) : 0,
+        optimizationTimeMs: Date.now() - startTime,
+        unavailableVehicles,
+        routeIncompatibleShipments: routeIncompatible
+      },
+      explanations: fleetResult.explanations
+    });
+  } catch (error) {
+    console.error('previewFleetOptimization error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * @desc  Run fleet optimization AND persist LoadPlan + LoadAssignments per truck.
+ *        Reuses existing Trip (by tripIds map) or auto-creates PLANNED trips.
+ * @route POST /api/trips/fleet-optimize/generate
+ * @body  { vehicleIds, shipmentIds?, routeId, tripIds?: {vehicleId: tripId}, config? }
+ */
+export const generateFleetLoadPlans = async (req, res) => {
+  const session = await mongoose.startSession();
+  let tx = false;
+  const startTime = Date.now();
+  try {
+    try { session.startTransaction(); tx = true; } catch (e) {}
+
+    const { vehicleIds, shipmentIds, routeId, tripIds: tripIdMap = {}, config } = req.body;
+
+    if (!Array.isArray(vehicleIds) || vehicleIds.length === 0)
+      throw { status: 400, message: 'Fleet optimization requires at least one vehicleId.' };
+    if (!routeId)
+      throw { status: 400, message: 'Fleet optimization requires a routeId.' };
+
+    const route = await Route.findOne({ routeId }).session(session);
+    if (!route) throw { status: 404, message: `Route ${routeId} not found.` };
+
+    const vehicleDocs = await Vehicle.find({ vehicleId: { $in: vehicleIds } }).session(session);
+    if (vehicleDocs.length === 0)
+      throw { status: 404, message: 'None of the specified vehicles were found.' };
+
+    const unavailableVehicles = [];
+    const availableVehicleDocs = [];
+    const badStatuses = ['MAINTENANCE', 'INACTIVE', 'In Maintenance', 'Out of Service', 'IN_TRANSIT', 'DISPATCHED'];
+    for (const v of vehicleDocs) {
+      if (badStatuses.includes(v.status) || badStatuses.includes(v.transitStatus)) {
+        unavailableVehicles.push({ vehicleId: v.vehicleId, reason: `Status '${v.status}'.` });
+      } else {
+        availableVehicleDocs.push(v);
+      }
+    }
+
+    if (availableVehicleDocs.length === 0)
+      throw { status: 422, message: 'All specified vehicles are unavailable.', unavailableVehicles };
+
+    const availableTrucks = availableVehicleDocs.map(buildTruckDescriptor);
+
+    const stops = route.stopsDetails?.length > 1
+      ? route.stopsDetails.map(s => s.locationName)
+      : (route.stops?.length > 1 ? route.stops : [route.source, route.destination]);
+
+    let candidateShipmentDocs;
+    if (Array.isArray(shipmentIds) && shipmentIds.length > 0) {
+      const docs = await Shipment.find({ shipmentId: { $in: shipmentIds } }).session(session);
+      const conflicted = docs.filter(s => s.isLocked && s.allocatedTripId);
+      if (conflicted.length > 0) {
+        const ids = conflicted.map(s => `${s.shipmentId} (Trip ${s.allocatedTripId})`).join(', ');
+        throw { status: 409, message: `Duplicate Allocation Conflict: [${ids}] already locked to another trip.` };
+      }
+      candidateShipmentDocs = docs;
+    } else {
+      candidateShipmentDocs = await Shipment.find({
+        status: { $in: ['DRAFT', 'PENDING', 'BOOKED'] },
+        isLocked: { $ne: true },
+        $and: [{ $or: [{ allocatedTripId: null }, { allocatedTripId: { $exists: false } }, { allocatedTripId: '' }] }]
+      }).session(session);
+    }
+
+    if (candidateShipmentDocs.length === 0)
+      throw { status: 422, message: 'No candidate shipments available for fleet optimization.' };
+
+    const routeCompatible = [];
+    const routeIncompatible = [];
+    for (const s of candidateShipmentDocs) {
+      const pIdx = stops.findIndex(st => norm(st) === norm(s.pickupStop));
+      const dIdx = stops.findIndex(st => norm(st) === norm(s.deliveryStop));
+      if (pIdx !== -1 && dIdx !== -1 && pIdx < dIdx) {
+        routeCompatible.push({
+          shipmentId: s.shipmentId, bookingId: s.shipmentId,
+          customer: s.shipperId || '', cargoDescription: s.cargoDescription || '',
+          pickup: s.pickupStop, delivery: s.deliveryStop,
+          volume: s.volume, weight: s.weight,
+          dimensions: { length: s.length || 0, width: s.width || 0, height: s.height || 0 },
+          fragile: s.fragile, stackable: s.stackable,
+          allowRotation: s.allowRotation !== false, priority: s.priority || 'STANDARD'
+        });
+      } else {
+        routeIncompatible.push({ shipmentId: s.shipmentId, reason: `${s.pickupStop}→${s.deliveryStop} not on route.` });
+      }
+    }
+
+    const fleetResult = optimizeMultiTruckFleet({
+      trucks: availableTrucks, route, shipments: routeCompatible, config: config || {}
+    });
+
+    const persistedPlans = [];
+    const nowTs = Date.now();
+
+    for (const plan of fleetResult.truckPlans) {
+      const truck = plan.truck;
+      const vDoc = availableVehicleDocs.find(v => v.vehicleId === truck.vehicleId);
+
+      // Resolve or auto-create a PLANNED trip for this vehicle
+      let trip;
+      const existingTripId = tripIdMap[truck.vehicleId];
+      if (existingTripId) {
+        trip = await Trip.findOne({ tripId: existingTripId }).session(session);
+        if (!trip) throw { status: 404, message: `Trip ${existingTripId} (vehicle ${truck.vehicleId}) not found.` };
+        if (['DISPATCHED', 'IN_TRANSIT', 'COMPLETED', 'CANCELLED'].includes(trip.status?.toUpperCase()))
+          throw { status: 400, message: `Trip ${existingTripId} in '${trip.status}' — cannot generate load plan.` };
+      } else {
+        const autoTripId = `TRIP-FLT-${truck.vehicleId}-${nowTs}`;
+        const originStop = route.stopsDetails?.[0]?.locationName || stops[0];
+        trip = new Trip({
+          tripId: autoTripId,
+          vehicle: vDoc?._id, vehicleId: truck.vehicleId,
+          route: route._id, routeId: route.routeId,
+          organizationId: req.user?.organizationId
+            ? (req.user.organizationId._id || req.user.organizationId) : vDoc?.organizationId,
+          logisticsCompanyName: req.user?.companyName || vDoc?.logisticsCompanyName || '',
+          carrierId: vDoc?.carrierId || 'CARRIER',
+          plannedDeparture: new Date(),
+          currentStopIndex: 0, currentStop: originStop, status: 'PLANNED',
+          vehicleSnapshot: {
+            vehicleId: truck.vehicleId, type: truck.type,
+            interiorLength: truck.dimensions.length, interiorWidth: truck.dimensions.width,
+            interiorHeight: truck.dimensions.height,
+            capacityVolume: truck.capacityVolume, capacityWeight: truck.capacityWeight,
+            dimensions: { ...truck.dimensions },
+            ratePerCbm: truck.ratePerCbm, ratePerKg: truck.ratePerKg, capturedAt: new Date()
+          }
+        });
+        await trip.save({ session });
+
+        if (vDoc) {
+          vDoc.status = 'ASSIGNED'; vDoc.transitStatus = 'ASSIGNED';
+          vDoc.activeTripId = trip.tripId; vDoc.currentTripId = trip.tripId;
+          await vDoc.save({ session });
+        }
+      }
+
+      const lastPlan = await LoadPlan.findOne({ tripId: trip.tripId }).sort({ version: -1 }).session(session);
+      const nextVersion = lastPlan ? lastPlan.version + 1 : 1;
+      if (lastPlan && lastPlan.status === 'GENERATED') {
+        lastPlan.status = 'SUPERSEDED';
+        lastPlan.auditLog.push({ action: 'SUPERSEDED', performedBy: req.user?.username || 'system',
+          timestamp: new Date(), notes: `Superseded by fleet v${nextVersion}`, version: lastPlan.version });
+        await lastPlan.save({ session });
+      }
+
+      const loadPlanId = `LP-${trip.tripId}-v${nextVersion}-FLT`;
+      const newPlan = new LoadPlan({
+        loadPlanId, trip: trip._id, tripId: trip.tripId,
+        vehicleId: truck.vehicleId, routeId: route.routeId,
+        version: nextVersion,
+        optimizerVersion: '2.4.0-deterministic-multistop',
+        strategyUsed: plan.strategyUsed || 'Fleet-MultiTruck',
+        generatedAt: new Date(),
+        objectiveScore: plan.objectiveScore || 0,
+        volumeUtilization:  plan.utilization?.overallVolumeUtilization || 0,
+        weightUtilization:  plan.utilization?.overallWeightUtilization || 0,
+        peakUtilization: {
+          volume: plan.utilization?.peakVolumeUtilization || 0,
+          weight: plan.utilization?.peakWeightUtilization || 0
+        },
+        segmentUtilization: plan.utilization?.segments || [],
+        unassignedShipments: (plan.unassigned || []).map(u => ({
+          shipmentId: u.shipmentId, bookingId: u.bookingId,
+          volume: u.volume, weight: u.weight,
+          pickup: u.pickup, delivery: u.delivery, reason: u.reason
+        })),
+        warnings: [],
+        explanation: `Fleet allocation: Truck ${truck.vehicleId} assigned ${plan.assignments.length} shipment(s).`,
+        status: 'GENERATED', isImmutable: false,
+        auditLog: [{ action: 'GENERATED', performedBy: req.user?.username || 'manager',
+          timestamp: new Date(),
+          notes: `Fleet optimizer: ${plan.assignments.length} shipments assigned.`,
+          version: nextVersion }]
+      });
+      await newPlan.save({ session });
+
+      const savedAssignments = [];
+      for (const a of plan.assignments) {
+        const aDx = Number(a.dimensions?.dx ?? a.dx ?? a.dimensions?.length ?? a.length ?? 0);
+        const aDy = Number(a.dimensions?.dy ?? a.dy ?? a.dimensions?.width  ?? a.width  ?? 0);
+        const aDz = Number(a.dimensions?.dz ?? a.dz ?? a.dimensions?.height ?? a.height ?? 0);
+        const assignDoc = new LoadAssignment({
+          loadPlan: newPlan._id, loadPlanId: newPlan.loadPlanId,
+          shipmentId: a.shipmentId, bookingId: a.bookingId,
+          customer: a.customer || '', priority: a.priority,
+          fragile: a.fragile, stackable: a.stackable,
+          segmentRange: a.segmentRange,
+          loadingSequence: a.loadingSequence, unloadingSequence: a.unloadingSequence,
+          dimensions: { dx: aDx, dy: aDy, dz: aDz, length: aDx, width: aDy, height: aDz },
+          dx: aDx, dy: aDy, dz: aDz, length: aDx, width: aDy, height: aDz,
+          volume: a.volume, weight: a.weight,
+          orientation: a.orientation, position: a.position,
+          obstructionScore: a.obstructionScore || 0, status: 'PROPOSED'
+        });
+        await assignDoc.save({ session });
+        savedAssignments.push(assignDoc);
+
+        await Shipment.findOneAndUpdate(
+          { shipmentId: a.shipmentId },
+          {
+            allocatedTripId:    trip.tripId,
+            allocatedLoadPlanId: newPlan.loadPlanId,
+            allocatedVehicleId:  truck.vehicleId,
+            allocatedAt:         new Date(),
+            allocationStatus:    'LOCKED',
+            isLocked:            true,
+            lockedAt:            new Date()
+          },
+          { session }
+        );
+      }
+
+      persistedPlans.push({
+        vehicleId:        truck.vehicleId,
+        tripId:           trip.tripId,
+        loadPlanId:       newPlan.loadPlanId,
+        assignedCount:    plan.assignments.length,
+        volumeUtilization: plan.utilization?.overallVolumeUtilization || 0,
+        weightUtilization: plan.utilization?.overallWeightUtilization || 0,
+        assignments:      savedAssignments,
+        unassigned:       plan.unassigned || []
+      });
+    }
+
+    if (tx) await session.commitTransaction();
+
+    const totalAssigned = persistedPlans.reduce((s, p) => s + p.assignedCount, 0);
+
+    res.status(201).json({
+      success: true,
+      message: `Fleet optimization complete: ${fleetResult.trucksActivatedCount} truck(s) activated, ${totalAssigned} shipment(s) assigned.`,
+      trucksActivated:     fleetResult.trucksActivatedCount,
+      trucksAvailable:     availableTrucks.length,
+      isFullyAssigned:     fleetResult.isFullyAssigned && routeIncompatible.length === 0,
+      plans:               persistedPlans,
+      unassignedShipments: [...fleetResult.unassignedShipments, ...routeIncompatible],
+      unavailableVehicles,
+      optimizationTimeMs:  Date.now() - startTime
+    });
+  } catch (error) {
+    if (tx) await session.abortTransaction();
+    console.error('generateFleetLoadPlans error:', error);
+    res.status(error.status || 500).json({ success: false, message: error.message });
+  } finally {
+    session.endSession();
+  }
+};
+
+/**
+ * @desc    Get all versioned load plans with real assignment counts and metrics
+ * @route   GET /api/trips/load-plans/archive
+ * @access  Private (Logistics Manager / Admin)
+ */
+export const getAllLoadPlans = async (req, res) => {
+  try {
+    let filter = {};
+    if (req.user && (req.user.role === 'logistics_manager' || req.user.role === 'carrier')) {
+      const orgId = req.user.organizationId?._id || req.user.organizationId;
+      const orgTrips = await Trip.find(getTenantFilter(req.user)).select('tripId').lean();
+      const orgTripIds = orgTrips.map(t => t.tripId);
+      if (orgId) {
+        filter = {
+          $or: [
+            { organizationId: orgId },
+            { carrierId: req.user.username },
+            { carrier: req.user._id },
+            { tripId: { $in: orgTripIds } }
+          ]
+        };
+      } else if (orgTripIds.length > 0) {
+        filter = { tripId: { $in: orgTripIds } };
+      }
+    }
+
+    const { status, vehicleId, routeId, tripId } = req.query;
+    if (status) filter.status = status;
+    if (vehicleId) filter.vehicleId = vehicleId;
+    if (routeId) filter.routeId = routeId;
+    if (tripId) filter.tripId = tripId;
+
+    const loadPlans = await LoadPlan.find(filter)
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const planIds = loadPlans.map(p => p.loadPlanId);
+    const assignments = await LoadAssignment.find({ loadPlanId: { $in: planIds } }).lean();
+
+    const countMap = new Map();
+    assignments.forEach(a => {
+      countMap.set(a.loadPlanId, (countMap.get(a.loadPlanId) || 0) + 1);
+    });
+
+    const enriched = loadPlans.map(p => ({
+      ...p,
+      assignedCount: countMap.get(p.loadPlanId) || 0
+    }));
+
+    res.json({
+      success: true,
+      count: enriched.length,
+      loadPlans: enriched
+    });
+  } catch (error) {
+    console.error('getAllLoadPlans error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};

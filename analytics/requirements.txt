@@ -9,3 +9,5 @@ pydantic
 requests
 pymongo
 python-dotenv
+pytest
+httpx

@@ -208,6 +208,7 @@ const bookingSchema = new mongoose.Schema({
     required: true,
     enum: [
       'Pending', 'PENDING',
+      'BOOKED',
       'CONFIRMED',
       'ALLOCATED',
       'LOCKED',
@@ -275,7 +276,54 @@ const bookingSchema = new mongoose.Schema({
     default: null
   }
 }, {
-  timestamps: true
+  timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
+});
+
+// Canonical dimensions mapping: enables both b.dimensions.length and b.length
+bookingSchema.virtual('dimensions').get(function() {
+  return {
+    length: this.length || 0,
+    width: this.width || 0,
+    height: this.height || 0
+  };
+}).set(function(v) {
+  if (v) {
+    if (v.length !== undefined) this.length = v.length;
+    if (v.width !== undefined) this.width = v.width;
+    if (v.height !== undefined) this.height = v.height;
+    if (v.dx !== undefined) this.length = v.dx;
+    if (v.dy !== undefined) this.width = v.dy;
+    if (v.dz !== undefined) this.height = v.dz;
+  }
+});
+
+// Canonical requestedDate mapping (for interoperability with Shipment)
+bookingSchema.virtual('requestedDate').get(function() {
+  return this.date;
+}).set(function(v) {
+  this.date = v;
+});
+
+// Canonical customerId mapping (for interoperability with Shipment)
+bookingSchema.virtual('customerId').get(function() {
+  return this.shipperId;
+}).set(function(v) {
+  this.shipperId = v;
+});
+
+// Canonical stop mappings (for interoperability with Shipment)
+bookingSchema.virtual('pickupStop').get(function() {
+  return this.fromStop;
+}).set(function(v) {
+  this.fromStop = v;
+});
+
+bookingSchema.virtual('deliveryStop').get(function() {
+  return this.toStop;
+}).set(function(v) {
+  this.toStop = v;
 });
 
 // Sync compound indexes
@@ -296,9 +344,11 @@ export const isValidBookingStatusTransition = (currentStatus, targetStatus) => {
   if (curr === tgt) return true; // Idempotent same-state check
 
   const validTransitions = {
-    'PENDING': ['CONFIRMED', 'ALLOCATED', 'WAITING_FOR_PICKUP', 'IN_TRANSIT', 'CANCELLED'],
-    'CONFIRMED': ['ALLOCATED', 'WAITING_FOR_PICKUP', 'IN_TRANSIT', 'CANCELLED'],
-    'ALLOCATED': ['WAITING_FOR_PICKUP', 'LOADED', 'IN_TRANSIT', 'CANCELLED'],
+    'PENDING': ['CONFIRMED', 'BOOKED', 'ALLOCATED', 'LOCKED', 'WAITING_FOR_PICKUP', 'IN_TRANSIT', 'CANCELLED'],
+    'CONFIRMED': ['BOOKED', 'ALLOCATED', 'LOCKED', 'WAITING_FOR_PICKUP', 'IN_TRANSIT', 'CANCELLED'],
+    'BOOKED': ['ALLOCATED', 'LOCKED', 'WAITING_FOR_PICKUP', 'LOADED', 'IN_TRANSIT', 'CANCELLED'],
+    'ALLOCATED': ['BOOKED', 'LOCKED', 'WAITING_FOR_PICKUP', 'LOADED', 'IN_TRANSIT', 'CANCELLED'],
+    'LOCKED': ['BOOKED', 'WAITING_FOR_PICKUP', 'LOADED', 'IN_TRANSIT', 'DELIVERED', 'CANCELLED'],
     'WAITING_FOR_PICKUP': ['LOADED', 'IN_TRANSIT', 'CANCELLED'],
     'LOADED': ['IN_TRANSIT', 'DELIVERED', 'COMPLETED', 'CANCELLED'],
     'IN_TRANSIT': ['DELIVERED', 'COMPLETED', 'CANCELLED'],

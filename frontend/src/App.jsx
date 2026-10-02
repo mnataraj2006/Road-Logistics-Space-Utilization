@@ -29,6 +29,7 @@ import ManagerFleetView from './views/manager/ManagerFleetView';
 import ManagerRoutesView from './views/manager/ManagerRoutesView';
 import ManagerAnalyticsView from './views/manager/ManagerAnalyticsView';
 import ManagerAuditView from './views/manager/ManagerAuditView';
+import ManagerMLIntelligenceView from './views/manager/ManagerMLIntelligenceView';
 
 /* ── Authoritative Post-Login Route Resolution (Requirement 11) ────────── */
 export const getPostLoginRoute = (role) => {
@@ -119,6 +120,7 @@ function App() {
           <Route path="/manager/routes" element={<ProtectedRoute allowedRoles={['logistics_manager']}><ManagerRoutesView /></ProtectedRoute>} />
           <Route path="/manager/analytics" element={<ProtectedRoute allowedRoles={['logistics_manager']}><ManagerAnalyticsView /></ProtectedRoute>} />
           <Route path="/manager/audit" element={<ProtectedRoute allowedRoles={['logistics_manager']}><ManagerAuditView /></ProtectedRoute>} />
+          <Route path="/manager/predictions" element={<ProtectedRoute allowedRoles={['logistics_manager']}><ManagerMLIntelligenceView /></ProtectedRoute>} />
 
           {/* ── CARRIER TO MANAGER MIGRATION REDIRECTS ───────────── */}
           <Route path="/carrier/fleet" element={<Navigate to="/manager/fleet" replace />} />

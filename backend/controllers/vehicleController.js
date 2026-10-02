@@ -1,5 +1,7 @@
 import Vehicle from '../models/Vehicle.js';
 import Booking from '../models/Booking.js';
+import Shipment from '../models/Shipment.js';
+import LoadAssignment from '../models/LoadAssignment.js';
 import Route from '../models/Route.js';
 import Payment from '../models/Payment.js';
 import User from '../models/User.js';
@@ -374,7 +376,7 @@ export const getVehicleById = async (req, res) => {
 // @access  Private
 export const getVehicleUtilization = async (req, res) => {
   try {
-    let filter = { status: 'Active' };
+    let filter = { status: { $in: ['Active', 'AVAILABLE', 'ASSIGNED', 'IN_TRANSIT'] } };
     if (req.user && req.user.role === 'logistics_manager' && req.user.carrierId) {
       filter.carrierId = req.user.carrierId;
     }
@@ -387,7 +389,7 @@ export const getVehicleUtilization = async (req, res) => {
 
     // Aggregate bookings grouped by vehicle, route, and date
     const dailyStats = await Booking.aggregate([
-      { $match: { status: { $ne: 'Cancelled' } } },
+      { $match: { status: { $nin: ['Cancelled', 'CANCELLED'] } } },
       {
         $group: {
           _id: { 
@@ -557,17 +559,43 @@ export const deleteVehicle = async (req, res) => {
       return res.status(404).json({ success: false, message: `Vehicle ${req.params.id} not found.` });
     }
     
-    // Safety check: Cannot delete truck if currently in transit on an active trip
+    // Safety check: Cannot delete truck if currently referenced by any active trip
     const TripModel = (await import('../models/Trip.js')).default;
     const activeTrip = await TripModel.findOne({
       vehicleId: vehicle.vehicleId,
-      status: { $in: ['DISPATCHED', 'IN_TRANSIT', 'AT_STOP'] }
+      status: { $in: ['PLANNED', 'DRAFT', 'READY_FOR_DISPATCH', 'DISPATCHED', 'IN_TRANSIT', 'AT_STOP'] }
     });
 
     if (activeTrip) {
       return res.status(400).json({
         success: false,
-        message: `Cannot delete truck ${vehicle.vehicleId}: It is currently IN_TRANSIT on Trip ${activeTrip.tripId}. Please complete or cancel the trip first.`
+        message: `Cannot delete truck ${vehicle.vehicleId}: It is currently referenced by active Trip ${activeTrip.tripId} (${activeTrip.status}). Please complete or cancel the trip first.`
+      });
+    }
+
+    // Safety check: Cannot delete truck if active bookings exist on it
+    const activeBooking = await Booking.findOne({
+      vehicleId: vehicle.vehicleId,
+      status: { $in: ['BOOKED', 'ALLOCATED', 'LOCKED', 'WAITING_FOR_PICKUP', 'LOADED', 'IN_TRANSIT'] }
+    });
+
+    if (activeBooking) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot delete truck ${vehicle.vehicleId}: Active consignment ${activeBooking.bookingId} (${activeBooking.status}) is currently assigned to this vehicle.`
+      });
+    }
+
+    // Safety check: Cannot delete truck if active shipments exist on it
+    const activeShipment = await Shipment.findOne({
+      allocatedVehicleId: vehicle.vehicleId,
+      status: { $in: ['BOOKED', 'ALLOCATED', 'LOCKED', 'WAITING_FOR_PICKUP', 'WAITING_AT_ORIGIN', 'LOADED', 'IN_TRANSIT'] }
+    });
+
+    if (activeShipment) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot delete truck ${vehicle.vehicleId}: Active shipment ${activeShipment.shipmentId} (${activeShipment.status}) is currently allocated to this vehicle.`
       });
     }
 
@@ -719,14 +747,20 @@ export const updateVehicleTransitState = async (req, res) => {
         );
       }
 
-      // Find all bookings with status 'Pending' for this vehicle for today/future
-      // Transition them to 'In Transit'
+      // Find all bookings/shipments for this vehicle for today/future
+      // Transition them to 'IN_TRANSIT'
       const todayStart = new Date();
       todayStart.setUTCHours(0, 0, 0, 0);
+      const now = new Date();
 
       await Booking.updateMany(
-        { vehicleId, status: 'Pending', date: { $gte: todayStart } },
-        { status: 'In Transit' }
+        { vehicleId, status: { $in: ['Pending', 'PENDING', 'BOOKED', 'ALLOCATED', 'LOCKED', 'WAITING_FOR_PICKUP', 'LOADED'] }, date: { $gte: todayStart } },
+        { $set: { status: 'IN_TRANSIT', allocationStatus: 'IN_TRANSIT', physicalStatus: 'ONBOARD', loadedAt: now } }
+      );
+
+      await Shipment.updateMany(
+        { allocatedVehicleId: vehicleId, status: { $in: ['PENDING', 'BOOKED', 'ALLOCATED', 'LOCKED', 'WAITING_FOR_PICKUP', 'WAITING_AT_ORIGIN', 'LOADED'] } },
+        { $set: { status: 'IN_TRANSIT', allocationStatus: 'IN_TRANSIT', physicalStatus: 'ONBOARD', loadedAt: now } }
       );
 
       return res.json({ message: 'Trip started successfully.', vehicle });
@@ -745,14 +779,28 @@ export const updateVehicleTransitState = async (req, res) => {
       // Find all bookings currently In Transit on this vehicle where destination (toStop) matches the stop they arrived at
       const bookingsToUnload = await Booking.find({
         vehicleId,
-        status: 'In Transit',
+        status: { $in: ['In Transit', 'IN_TRANSIT', 'LOADED', 'ALLOCATED', 'ONBOARD'] },
         toStop: vehicle.currentStop
       });
 
-      // Mark them as Completed (unloaded) and release their payments
+      // Mark them as DELIVERED (unloaded), sync Shipment & LoadAssignment, and release their payments
+      const now = new Date();
       const bulkUnloadPromises = bookingsToUnload.map(async (bkg) => {
-        bkg.status = 'Completed';
+        bkg.status = 'DELIVERED';
+        bkg.allocationStatus = 'DELIVERED';
+        bkg.physicalStatus = 'DELIVERED';
+        bkg.deliveredAt = now;
         await bkg.save();
+
+        await Shipment.updateMany(
+          { $or: [{ bookingId: bkg.bookingId }, { shipmentId: bkg.shipmentId || bkg.bookingId }] },
+          { $set: { status: 'DELIVERED', allocationStatus: 'DELIVERED', physicalStatus: 'DELIVERED', deliveredAt: now } }
+        );
+
+        await LoadAssignment.updateMany(
+          { $or: [{ bookingId: bkg.bookingId }, { shipmentId: bkg.shipmentId || bkg.bookingId }] },
+          { $set: { status: 'DELIVERED', physicalStatus: 'DELIVERED', deliveredAt: now } }
+        );
 
         // Also release payment corresponding to this booking
         const payment = await Payment.findOne({ bookingId: bkg.bookingId });
@@ -794,7 +842,7 @@ export const updateVehicleTransitState = async (req, res) => {
 // @route   POST /api/vehicles/:id/verify-stop
 // @access  Private
 export const verifyStop = async (req, res) => {
-  const { qrToken } = req.body;
+  const { qrToken, stopId } = req.body;
   const vehicleId = req.params.id;
 
   try {
@@ -824,6 +872,18 @@ export const verifyStop = async (req, res) => {
 
     const stop = route.stopsDetails[stopIndex];
 
+    // Validate stopId consistency if provided
+    if (stopId !== undefined && stopId !== null) {
+      if (typeof stopId !== 'string' || !stopId.trim()) {
+        return res.status(400).json({ message: 'Security Verification Failed: stopId must be a valid non-empty string.' });
+      }
+      const cleanStopId = stopId.trim();
+      const match = stop.stopId === cleanStopId || String(stop._id) === cleanStopId || stop.locationName?.toLowerCase() === cleanStopId.toLowerCase();
+      if (!match) {
+        return res.status(400).json({ message: `Security Violation: Supplied stopId '${cleanStopId}' does not match the scanned stop.` });
+      }
+    }
+
     // Enforce sequence: cannot verify future stops out of order
     if (stopIndex !== route.currentStopIndex) {
       const expectedStop = route.stopsDetails[route.currentStopIndex];
@@ -844,13 +904,29 @@ export const verifyStop = async (req, res) => {
     // 1. Process Planned Unloads (bookings In Transit with toStop matching current stop name)
     const bookingsToUnload = await Booking.find({
       vehicleId,
-      status: 'In Transit',
+      status: { $in: ['In Transit', 'IN_TRANSIT', 'LOADED', 'ALLOCATED', 'ON_TRUCK', 'ONBOARD'] },
       toStop: stop.locationName
     });
 
     const unloadPromises = bookingsToUnload.map(async (bkg) => {
-      bkg.status = 'Completed';
+      const now = new Date();
+      bkg.status = 'DELIVERED';
+      bkg.allocationStatus = 'DELIVERED';
+      bkg.physicalStatus = 'DELIVERED';
+      bkg.deliveredAt = now;
       await bkg.save();
+
+      // Sync Shipment
+      await Shipment.updateMany(
+        { $or: [{ bookingId: bkg.bookingId }, { shipmentId: bkg.shipmentId || bkg.bookingId }] },
+        { $set: { status: 'DELIVERED', allocationStatus: 'DELIVERED', physicalStatus: 'DELIVERED', deliveredAt: now } }
+      );
+
+      // Sync LoadAssignment
+      await LoadAssignment.updateMany(
+        { $or: [{ bookingId: bkg.bookingId }, { shipmentId: bkg.shipmentId || bkg.bookingId }] },
+        { $set: { status: 'DELIVERED', physicalStatus: 'DELIVERED', deliveredAt: now } }
+      );
 
       // Release payment corresponding to this booking
       const payment = await Payment.findOne({ bookingId: bkg.bookingId });

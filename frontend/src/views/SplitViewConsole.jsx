@@ -124,6 +124,7 @@ const SplitViewConsole = () => {
   const [showQrModal, setShowQrModal] = useState(false);
   const [qrModalRoute, setQrModalRoute] = useState(null);
   const [showScanModal, setShowScanModal] = useState(false);
+  const [scanStopId, setScanStopId] = useState('');
   const [scanToken, setScanToken] = useState('');
   const [scanVehicleId, setScanVehicleId] = useState('');
   const [scanSubmitting, setScanSubmitting] = useState(false);
@@ -296,21 +297,46 @@ const SplitViewConsole = () => {
   };
 
   // Action: Execute Stop Verification Scan
+  const handleScanTokenChange = (val) => {
+    setScanToken(val);
+    if (val.startsWith('STP-SEC.')) {
+      try {
+        const parts = val.split('.');
+        if (parts.length === 3) {
+          let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+          while (b64.length % 4) b64 += '=';
+          const payload = JSON.parse(atob(b64));
+          if (payload.stopId && !scanStopId) {
+            setScanStopId(payload.stopId);
+          }
+          if (payload.vehicleId && !scanVehicleId) {
+            setScanVehicleId(payload.vehicleId);
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+  };
+
   const handleExecuteScan = async (e) => {
     if (e) e.preventDefault();
-    if (!scanVehicleId.trim() || !scanToken.trim()) {
-      alert('Vehicle ID and QR Token are required.');
+    if (!scanVehicleId.trim() || !scanToken.trim() || !scanStopId.trim()) {
+      alert('Vehicle ID, Stop ID, and QR Token are required.');
       return;
     }
     setScanSubmitting(true);
     try {
       const { data } = await api.post('/transit/verify-stop', {
         vehicleId: scanVehicleId.trim(),
-        qrToken: scanToken.trim()
+        stopId: scanStopId.trim(),
+        qrToken: scanToken.trim(),
+        secureToken: scanToken.trim()
       });
       setShowScanModal(false);
       setScanResultModal(data);
       setScanToken('');
+      setScanStopId('');
       fetchData();
       if (selectedVehicleId) fetchVehicleDetails(selectedVehicleId);
     } catch (err) {
@@ -1268,11 +1294,23 @@ const SplitViewConsole = () => {
               </div>
 
               <div>
+                <label className="block uppercase tracking-wider mb-1">Stop Identifier (stopId)</label>
+                <input
+                  type="text"
+                  value={scanStopId}
+                  onChange={e => setScanStopId(e.target.value)}
+                  required
+                  placeholder="e.g. STP-2 or Salem"
+                  className={inputCls}
+                />
+              </div>
+
+              <div>
                 <label className="block uppercase tracking-wider mb-1">Scanned Stop QR Token String</label>
                 <input
                   type="text"
                   value={scanToken}
-                  onChange={e => setScanToken(e.target.value)}
+                  onChange={e => handleScanTokenChange(e.target.value)}
                   required
                   placeholder="e.g. STPTKN-a1b2c3d4..."
                   className={inputCls}

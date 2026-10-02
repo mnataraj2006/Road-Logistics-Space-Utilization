@@ -594,12 +594,12 @@ const LogisticsManagerConsole = () => {
               {/* Grid Lines */}
               <div className="w-full h-full border border-dashed border-gray-800 relative mt-4">
                 {currentAssignments.map((a, idx) => {
-                  const posX = a.position?.x || 0;
-                  const posY = a.position?.y || 0;
-                  const posZ = a.position?.z || 0;
-                  const dimL = a.dimensions?.length || 2;
-                  const dimW = a.dimensions?.width || 1.2;
-                  const dimH = a.dimensions?.height || 1.5;
+                  const posX = a.position?.x ?? a.x ?? 0;
+                  const posY = a.position?.y ?? a.y ?? 0;
+                  const posZ = a.position?.z ?? a.z ?? 0;
+                  const dimL = a.dx ?? a.length ?? a.dimensions?.dx ?? a.dimensions?.length ?? 0;
+                  const dimW = a.dy ?? a.width ?? a.dimensions?.dy ?? a.dimensions?.width ?? 0;
+                  const dimH = a.dz ?? a.height ?? a.dimensions?.dz ?? a.dimensions?.height ?? 0;
 
                   const leftPct = (posX / truckDimensions.length) * 100;
                   const widthPct = Math.min(100 - leftPct, (dimL / truckDimensions.length) * 100);

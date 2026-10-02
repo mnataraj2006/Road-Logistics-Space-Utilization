@@ -80,6 +80,10 @@ const loadPlanSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   },
+  executionTimeMs: {
+    type: Number,
+    default: 0
+  },
   objectiveScore: {
     type: Number,
     default: 0

@@ -233,6 +233,7 @@ const runDynamicReoptimizationTestSuite = async () => {
     const stopBRes = await executeStopLifecycleOperational({
       tripId,
       vehicleId,
+      stopId: 'STP-B',
       qrToken: 'QR-B-2',
       idempotencyKey: 'IDEM-REOPT-STOP-B',
       performedBy: 'driver-mohan'
@@ -343,6 +344,7 @@ const runDynamicReoptimizationTestSuite = async () => {
     const stopCRes = await executeStopLifecycleOperational({
       tripId,
       vehicleId,
+      stopId: 'STP-C',
       qrToken: 'QR-C-3',
       idempotencyKey: 'IDEM-REOPT-STOP-C',
       performedBy: 'driver-mohan'
@@ -358,6 +360,7 @@ const runDynamicReoptimizationTestSuite = async () => {
     const stopDRes = await executeStopLifecycleOperational({
       tripId,
       vehicleId,
+      stopId: 'STP-D',
       qrToken: 'QR-D-4',
       idempotencyKey: 'IDEM-REOPT-STOP-D',
       performedBy: 'driver-mohan'

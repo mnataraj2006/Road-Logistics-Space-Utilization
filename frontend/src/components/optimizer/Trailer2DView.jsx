@@ -19,7 +19,9 @@ import {
   normalizeCanonicalPlacements,
   getActiveSegmentCargo,
   validateAuthoritativePlacements,
-  validatePackageWithinTruck
+  validatePackageWithinTruck,
+  getCanonicalRenderableAssignments,
+  resolveAuthoritativeTruckDimensions
 } from './canonicalPlacement';
 
 /**
@@ -43,45 +45,62 @@ const Trailer2DView = ({
   onSelectItem,
   selectedSegment = 'ALL',
   onSelectSegment,
-  stops = ['Chennai', 'Kanchipuram', 'Vellore', 'Hosur', 'Bangalore'],
+  route,
+  stops,
   currentStop = 'Chennai',
   showUnloadPath = true,
   isLocked = false
 }) => {
   // Authoritative vehicle dimension resolution
-  const rawDims = truckSpecs?.dimensions || truckDimensions || {};
-  const truckL = Number(rawDims.length || truckSpecs?.interiorLength || AUTHORITATIVE_TRUCK.length);
-  const truckW = Number(rawDims.width || truckSpecs?.interiorWidth || AUTHORITATIVE_TRUCK.width);
-  const truckH = Number(rawDims.height || truckSpecs?.interiorHeight || AUTHORITATIVE_TRUCK.height);
+  const authTruck = useMemo(() => {
+    return resolveAuthoritativeTruckDimensions(truckSpecs?.dimensions || truckDimensions || truckSpecs, AUTHORITATIVE_TRUCK);
+  }, [truckSpecs, truckDimensions]);
+
+  const truckL = authTruck.length;
+  const truckW = authTruck.width;
+  const truckH = authTruck.height;
 
   const truckVol = Number(
-    truckSpecs?.capacityVolume || truckCapacity?.volume || AUTHORITATIVE_TRUCK.capacityVolume
+    truckSpecs?.capacityVolume || truckCapacity?.volume || authTruck.capacityVolume
   );
   const truckWt = Number(
-    truckSpecs?.capacityWeight || truckCapacity?.weight || AUTHORITATIVE_TRUCK.capacityWeight
+    truckSpecs?.capacityWeight || truckCapacity?.weight || authTruck.capacityWeight
   );
 
   const resolvedStops = useMemo(() => {
     if (Array.isArray(stops) && stops.length > 0) return stops;
-    return ['Chennai', 'Kanchipuram', 'Vellore', 'Hosur', 'Bangalore'];
-  }, [stops]);
-
-  // Canonical normalized items
-  const canonicalItems = useMemo(() => {
-    if (Array.isArray(externalCanonicalItems) && externalCanonicalItems.length > 0) {
-      return externalCanonicalItems;
+    if (Array.isArray(route?.stops) && route.stops.length > 0) return route.stops;
+    const allItems = externalCanonicalItems || assignments;
+    if (Array.isArray(allItems) && allItems.length > 0) {
+      const fromCargo = [];
+      allItems.forEach(a => {
+        const from = a.segmentRange?.fromStop || a.pickupStop || a.pickup || a.loadStop;
+        const to = a.segmentRange?.toStop || a.deliveryStop || a.delivery || a.unloadStop;
+        if (from && !fromCargo.includes(from)) fromCargo.push(from);
+        if (to && !fromCargo.includes(to)) fromCargo.push(to);
+      });
+      if (fromCargo.length >= 2) return fromCargo;
     }
-    return normalizeCanonicalPlacements(
-      assignments,
-      { length: truckL, width: truckW, height: truckH },
-      resolvedStops
-    );
-  }, [externalCanonicalItems, assignments, truckL, truckW, truckH, resolvedStops]);
+    return ['Chennai', 'Trichy', 'Madurai'];
+  }, [stops, route, externalCanonicalItems, assignments]);
 
-  // Active items for selected route segment
-  const activeItems = useMemo(() => {
-    return getActiveSegmentCargo(canonicalItems, selectedSegment);
-  }, [canonicalItems, selectedSegment]);
+  // Authoritative Canonical Resolution & Renderable Assignments for 2D CAD
+  const {
+    canonicalItems,
+    activeItems,
+    validActiveItems: physicallyValidActiveItems,
+    quarantinedActiveItems,
+    futureItems,
+    totalPlannedCount
+  } = useMemo(() => {
+    return getCanonicalRenderableAssignments({
+      assignments,
+      canonicalItems: externalCanonicalItems,
+      truckDimensions: { length: truckL, width: truckW, height: truckH },
+      stops: resolvedStops,
+      selectedSegment
+    });
+  }, [externalCanonicalItems, assignments, truckL, truckW, truckH, resolvedStops, selectedSegment]);
 
   // Authoritative physical validation
   const validation = useMemo(() => {
@@ -91,25 +110,6 @@ const Trailer2DView = ({
       resolvedStops
     );
   }, [canonicalItems, truckL, truckW, truckH, resolvedStops]);
-
-  // Strict Pre-Render Physical Boundary Filter & Quarantine for 2D CAD
-  const { physicallyValidActiveItems, quarantinedActiveItems } = useMemo(() => {
-    const valid = [];
-    const quarantined = [];
-    activeItems.forEach(item => {
-      const check = validatePackageWithinTruck({
-        position: { x: item.x, y: item.y, z: item.z },
-        dimensions: { dx: item.dx, dy: item.dy, dz: item.dz },
-        truckDimensions: { length: truckL, width: truckW, height: truckH }
-      });
-      if (check.valid) {
-        valid.push(item);
-      } else {
-        quarantined.push({ item, violations: check.violations });
-      }
-    });
-    return { physicallyValidActiveItems: valid, quarantinedActiveItems: quarantined };
-  }, [activeItems, truckL, truckW, truckH]);
 
   // Telemetry metrics
   const totalOccupiedVol = useMemo(() => {
@@ -181,11 +181,17 @@ const Trailer2DView = ({
           <div className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-slate-950 border border-emerald-600/80 text-emerald-300 font-bold">
             <span>LOCKED PLAN: {canonicalItems.length} Pkgs</span>
             <span className="text-slate-600">•</span>
-            <span>ONBOARD: {activeItems.length} Pkgs ({totalOccupiedVol.toFixed(1)} m³, {volUtilPct}%)</span>
-            {canonicalItems.length > activeItems.length && (
+            <span>ACTIVE: {physicallyValidActiveItems.length} Pkgs ({totalOccupiedVol.toFixed(1)} m³, {volUtilPct}%)</span>
+            {quarantinedActiveItems.length > 0 && (
               <>
                 <span className="text-slate-600">•</span>
-                <span className="text-amber-400">FUTURE: {canonicalItems.length - activeItems.length} Pkgs</span>
+                <span className="text-red-400 font-bold">QUARANTINED: {quarantinedActiveItems.length} Pkgs</span>
+              </>
+            )}
+            {futureItems.length > 0 && (
+              <>
+                <span className="text-slate-600">•</span>
+                <span className="text-amber-400">FUTURE: {futureItems.length} Pkgs</span>
               </>
             )}
           </div>
@@ -215,6 +221,31 @@ const Trailer2DView = ({
         </div>
 
         <div className="relative w-full bg-slate-950 rounded-2xl border border-slate-800 overflow-hidden p-4 flex items-center justify-center shadow-inner min-h-[240px]">
+          {physicallyValidActiveItems.length === 0 && (
+            <div className="absolute inset-0 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-xs z-10 pointer-events-auto">
+              <div className="text-center p-4 rounded-xl border border-slate-800 bg-slate-900/90 max-w-md space-y-2">
+                <span className="text-xs font-bold text-slate-200 block">
+                  {selectedSegment === 'ALL'
+                    ? 'No physical cargo currently loaded on trailer.'
+                    : `No cargo physically onboard during segment ${selectedSegment !== undefined ? `#${Number(selectedSegment) + 1}` : ''}.`}
+                </span>
+                <p className="text-[11px] text-slate-400">
+                  {canonicalItems.length > 0
+                    ? `${canonicalItems.length} planned packages exist along the corridor.`
+                    : 'Awaiting load plan generation.'}
+                </p>
+                {canonicalItems.length > 0 && selectedSegment !== 'ALL' && onSelectSegment && (
+                  <button
+                    type="button"
+                    onClick={() => onSelectSegment('ALL')}
+                    className="px-3 py-1.5 rounded-lg text-xs font-black bg-blue-600 hover:bg-blue-500 text-white transition cursor-pointer border-none shadow"
+                  >
+                    View Complete Load ({canonicalItems.length} pkgs)
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
           <svg
             viewBox={topViewBox}
             preserveAspectRatio="xMidYMid meet"
@@ -403,6 +434,31 @@ const Trailer2DView = ({
         </div>
 
         <div className="relative w-full bg-slate-950 rounded-2xl border border-slate-800 overflow-hidden p-4 flex items-center justify-center shadow-inner min-h-[240px]">
+          {physicallyValidActiveItems.length === 0 && (
+            <div className="absolute inset-0 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-xs z-10 pointer-events-auto">
+              <div className="text-center p-4 rounded-xl border border-slate-800 bg-slate-900/90 max-w-md space-y-2">
+                <span className="text-xs font-bold text-slate-200 block">
+                  {selectedSegment === 'ALL'
+                    ? 'No physical cargo currently loaded on trailer.'
+                    : `No cargo physically onboard during segment ${selectedSegment !== undefined ? `#${Number(selectedSegment) + 1}` : ''}.`}
+                </span>
+                <p className="text-[11px] text-slate-400">
+                  {canonicalItems.length > 0
+                    ? `${canonicalItems.length} planned packages exist along the corridor.`
+                    : 'Awaiting load plan generation.'}
+                </p>
+                {canonicalItems.length > 0 && selectedSegment !== 'ALL' && onSelectSegment && (
+                  <button
+                    type="button"
+                    onClick={() => onSelectSegment('ALL')}
+                    className="px-3 py-1.5 rounded-lg text-xs font-black bg-blue-600 hover:bg-blue-500 text-white transition cursor-pointer border-none shadow"
+                  >
+                    View Complete Load ({canonicalItems.length} pkgs)
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
           <svg
             viewBox={sideViewBox}
             preserveAspectRatio="xMidYMid meet"

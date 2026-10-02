@@ -108,7 +108,7 @@ export const getRoutePerformance = async (req, res) => {
       {
         $group: {
           _id: '$routeId',
-          totalRevenue: { $sum: '$price' },
+          totalRevenue: { $sum: { $ifNull: ['$revenue', '$price'] } },
           totalCompletedBookings: { $sum: 1 },
           totalVolumeUtilized: { $sum: '$volume' },
           totalWeightUtilized: { $sum: '$weight' },
@@ -266,6 +266,45 @@ export const deleteRoute = async (req, res) => {
     const route = await Route.findOne({ routeId: req.params.id });
     if (!route) {
       return res.status(404).json({ message: 'Route not found' });
+    }
+
+    // Safety check 1: Cannot delete route if active trips exist on it
+    const Trip = (await import('../models/Trip.js')).default;
+    const activeTrip = await Trip.findOne({
+      routeId: route.routeId,
+      status: { $in: ['PLANNED', 'DRAFT', 'READY_FOR_DISPATCH', 'DISPATCHED', 'IN_TRANSIT', 'AT_STOP'] }
+    });
+
+    if (activeTrip) {
+      return res.status(400).json({
+        message: `Cannot delete route ${route.routeId}: Active Trip ${activeTrip.tripId} (${activeTrip.status}) is currently scheduled on this route.`
+      });
+    }
+
+    // Safety check 2: Cannot delete route if active vehicles are assigned to this route lane
+    const Vehicle = (await import('../models/Vehicle.js')).default;
+    const activeVehicle = await Vehicle.findOne({
+      routeLane: route.routeId,
+      status: 'Active'
+    });
+
+    if (activeVehicle) {
+      return res.status(400).json({
+        message: `Cannot delete route ${route.routeId}: Active truck ${activeVehicle.vehicleId} is currently assigned to this route lane.`
+      });
+    }
+
+    // Safety check 3: Cannot delete route if active bookings exist on it
+    const Booking = (await import('../models/Booking.js')).default;
+    const activeBooking = await Booking.findOne({
+      routeId: route.routeId,
+      status: { $in: ['BOOKED', 'ALLOCATED', 'LOCKED', 'IN_TRANSIT'] }
+    });
+
+    if (activeBooking) {
+      return res.status(400).json({
+        message: `Cannot delete route ${route.routeId}: Active consignment ${activeBooking.bookingId} (${activeBooking.status}) is booked on this route.`
+      });
     }
 
     await Route.deleteOne({ routeId: req.params.id });

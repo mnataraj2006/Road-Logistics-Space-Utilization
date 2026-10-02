@@ -15,6 +15,7 @@ import tripRoutes from './routes/tripRoutes.js';
 import pricingRoutes from './routes/pricingRoutes.js';
 import auditRoutes from './routes/auditRoutes.js';
 import analyticsRoutes from './routes/analyticsRoutes.js';
+import shipmentRoutes from './routes/shipmentRoutes.js';
 import {
   securityHeadersAndCorrelation,
   sanitizeInput,
@@ -58,112 +59,163 @@ app.use('/api/trips', tripRoutes);
 app.use('/api/pricing', pricingRoutes);
 app.use('/api/audit', auditRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/shipments', shipmentRoutes);
 
 // Predictions Bridge (Gateway routing to Python FastAPI)
+// ML service must not become a dependency for core logistics operations.
+// All bridge calls use a 10-second timeout so Node never hangs on a down Python service.
+const ML_SERVICE_URL = process.env.FASTAPI_URL || 'http://127.0.0.1:8000';
+const ML_TIMEOUT_MS  = 10000;
+
+function mlFetch(path, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ML_TIMEOUT_MS);
+  return fetch(`${ML_SERVICE_URL}${path}`, { ...options, signal: controller.signal })
+    .finally(() => clearTimeout(timer));
+}
+
+app.get('/api/predictions/health', async (req, res) => {
+  try {
+    const response = await mlFetch('/');
+    const data = await response.json();
+    const isUp = response.ok && data.status === 'UP';
+    res.status(isUp ? 200 : 503).json({
+      status: isUp ? 'healthy' : 'degraded',
+      message: isUp
+        ? 'Python ML analytics engine is online.'
+        : 'Python ML analytics engine returned non-OK status.',
+      upstreamStatus: data.status,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    const isTimeout = error.name === 'AbortError';
+    res.status(503).json({
+      status: 'unhealthy',
+      message: isTimeout
+        ? 'ML service did not respond within timeout.'
+        : 'ML service is unreachable.',
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 app.post('/api/predictions/demand', async (req, res) => {
   try {
-    const response = await fetch(`${process.env.FASTAPI_URL || 'http://127.0.0.1:8000'}/predict/demand`, {
+    const response = await mlFetch('/predict/demand', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req.body)
     });
     const data = await response.json();
-    if (!response.ok) {
-      return res.status(response.status).json(data);
-    }
+    if (!response.ok) return res.status(response.status).json(data);
     res.json(data);
   } catch (error) {
+    const isTimeout = error.name === 'AbortError';
+    const code = isTimeout ? 504 : 503;
+    const msg  = isTimeout ? 'ML demand forecast timed out.' : 'ML service unreachable for demand forecast.';
     console.error('FastAPI demand prediction bridge error:', error);
-    res.status(500).json({ message: 'Error communicating with Python prediction engine', error: error.message });
+    res.status(code).json({ message: msg, error: error.message });
   }
 });
 
 app.post('/api/predictions/occupancy', async (req, res) => {
   try {
-    const response = await fetch(`${process.env.FASTAPI_URL || 'http://127.0.0.1:8000'}/predict/occupancy`, {
+    const response = await mlFetch('/predict/occupancy', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req.body)
     });
     const data = await response.json();
-    if (!response.ok) {
-      return res.status(response.status).json(data);
-    }
+    if (!response.ok) return res.status(response.status).json(data);
     res.json(data);
   } catch (error) {
+    const isTimeout = error.name === 'AbortError';
+    const code = isTimeout ? 504 : 503;
+    const msg  = isTimeout ? 'ML occupancy prediction timed out.' : 'ML service unreachable for occupancy prediction.';
     console.error('FastAPI occupancy prediction bridge error:', error);
-    res.status(500).json({ message: 'Error communicating with Python prediction engine', error: error.message });
+    res.status(code).json({ message: msg, error: error.message });
   }
 });
 
 app.post('/api/predictions/delay', async (req, res) => {
   try {
-    const response = await fetch(`${process.env.FASTAPI_URL || 'http://127.0.0.1:8000'}/predict/delay`, {
+    const response = await mlFetch('/predict/delay', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req.body)
     });
     const data = await response.json();
-    if (!response.ok) {
-      return res.status(response.status).json(data);
-    }
+    if (!response.ok) return res.status(response.status).json(data);
     res.json(data);
   } catch (error) {
+    const isTimeout = error.name === 'AbortError';
+    const code = isTimeout ? 504 : 503;
+    const msg  = isTimeout ? 'ML delay prediction timed out.' : 'ML service unreachable for delay prediction.';
     console.error('FastAPI delay prediction bridge error:', error);
-    res.status(500).json({ message: 'Error communicating with Python prediction engine', error: error.message });
+    res.status(code).json({ message: msg, error: error.message });
   }
 });
 
 app.post('/api/predictions/price', async (req, res) => {
   try {
-    const response = await fetch(`${process.env.FASTAPI_URL || 'http://127.0.0.1:8000'}/predict/price`, {
+    const response = await mlFetch('/predict/price', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req.body)
     });
     const data = await response.json();
-    if (!response.ok) {
-      return res.status(response.status).json(data);
-    }
+    if (!response.ok) return res.status(response.status).json(data);
     res.json(data);
   } catch (error) {
+    const isTimeout = error.name === 'AbortError';
+    const code = isTimeout ? 504 : 503;
+    const msg  = isTimeout ? 'ML price prediction timed out.' : 'ML service unreachable for price prediction.';
     console.error('FastAPI price prediction bridge error:', error);
-    res.status(500).json({ message: 'Error communicating with Python prediction engine', error: error.message });
+    res.status(code).json({ message: msg, error: error.message });
   }
 });
 
 app.post('/api/predictions/optimize', async (req, res) => {
   try {
-    const response = await fetch(`${process.env.FASTAPI_URL || 'http://127.0.0.1:8000'}/optimize/consolidation`, {
+    const response = await mlFetch('/optimize/consolidation', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req.body)
     });
     const data = await response.json();
-    if (!response.ok) {
-      return res.status(response.status).json(data);
-    }
+    if (!response.ok) return res.status(response.status).json(data);
     res.json(data);
   } catch (error) {
+    const isTimeout = error.name === 'AbortError';
+    const code = isTimeout ? 504 : 503;
+    const msg  = isTimeout ? 'ML consolidation optimization timed out.' : 'ML service unreachable for optimization.';
     console.error('FastAPI optimization bridge error:', error);
-    res.status(500).json({ message: 'Error communicating with Python prediction engine', error: error.message });
+    res.status(code).json({ message: msg, error: error.message });
   }
 });
 
 app.post('/api/predictions/train', async (req, res) => {
+  // Training can take a long time — extend timeout to 120 seconds
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 120000);
   try {
-    const response = await fetch(`${process.env.FASTAPI_URL || 'http://127.0.0.1:8000'}/train`, {
+    const response = await fetch(`${ML_SERVICE_URL}/train`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal
     });
+    clearTimeout(timer);
     const data = await response.json();
-    if (!response.ok) {
-      return res.status(response.status).json(data);
-    }
+    if (!response.ok) return res.status(response.status).json(data);
     res.json(data);
   } catch (error) {
+    clearTimeout(timer);
+    const isTimeout = error.name === 'AbortError';
+    const code = isTimeout ? 504 : 503;
+    const msg  = isTimeout ? 'Model retraining timed out (120s).' : 'ML service unreachable for retraining.';
     console.error('FastAPI train bridge error:', error);
-    res.status(500).json({ message: 'Error communicating with Python prediction engine', error: error.message });
+    res.status(code).json({ message: msg, error: error.message });
   }
 });
 

@@ -121,7 +121,16 @@ const vehicleSchema = new mongoose.Schema({
     default: null
   }
 }, {
-  timestamps: true
+  timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
+});
+
+// Canonical cargoDimensions mapping (for interoperability with legacy views)
+vehicleSchema.virtual('cargoDimensions').get(function() {
+  return this.dimensions;
+}).set(function(v) {
+  if (v) this.dimensions = v;
 });
 
 const Vehicle = mongoose.model('Vehicle', vehicleSchema);

@@ -4,7 +4,7 @@ import { AuthContext } from '../../context/AuthContext';
 import {
   Truck, Search, Box, CalendarCheck, MapPin, User, LogOut,
   Sliders, ShieldCheck, Activity, Layers, Route as RouteIcon,
-  BarChart3, FileCheck, AlertCircle, Menu, X, ChevronLeft, ChevronRight
+  BarChart3, FileCheck, AlertCircle, Menu, X, ChevronLeft, ChevronRight, BrainCircuit
 } from 'lucide-react';
 
 /* ── Grouped Navigation Definition ────────────────────────────────────────── */
@@ -42,8 +42,9 @@ const ROLE_NAV_GROUPS = {
     {
       groupLabel: 'INSIGHTS',
       items: [
-        { label: 'Analytics',       path: '/manager/analytics',   icon: BarChart3  },
-        { label: 'Security Audit',  path: '/manager/audit',       icon: FileCheck  }
+        { label: 'Analytics',       path: '/manager/analytics',    icon: BarChart3     },
+        { label: 'ML Intelligence', path: '/manager/predictions',  icon: BrainCircuit  },
+        { label: 'Security Audit',  path: '/manager/audit',        icon: FileCheck     }
       ]
     }
   ],

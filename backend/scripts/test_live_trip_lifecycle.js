@@ -21,6 +21,7 @@ import {
   executeStopLifecycleOperational,
   reoptimizeRemainingRoute
 } from '../services/tripLifecycleService.js';
+import { connectTestDB, safeDeleteMany } from '../config/testDbGuard.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,9 +30,8 @@ dotenv.config({ path: path.join(__dirname, '../.env') });
 
 const runLiveTripLifecycleTestSuite = async () => {
   try {
-    const mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/road_logistics';
-    console.log('Connecting to MongoDB...', mongoUri);
-    await mongoose.connect(mongoUri);
+    const { dbName } = await connectTestDB();
+    console.log(`[TEST-GUARD] Connected to verified test database: ${dbName}`);
 
     console.log('\n===============================================================');
     console.log('STARTING COMPLETE LIVE MULTI-STOP TRIP LIFECYCLE TEST SUITE');
@@ -41,19 +41,24 @@ const runLiveTripLifecycleTestSuite = async () => {
     const vehicleId = 'TRK-LIFECYCLE-1';
     const shipperUsername = 'shipper-lifecycle';
 
-    // Cleanup existing test data
-    await Trip.deleteMany({ vehicleId });
-    await TripStop.deleteMany({});
-    await Vehicle.deleteMany({ vehicleId });
-    await Route.deleteMany({ routeId });
-    await Shipment.deleteMany({ shipperId: shipperUsername });
-    await Booking.deleteMany({ shipperId: shipperUsername });
-    await LoadPlan.deleteMany({ vehicleId });
-    await LoadAssignment.deleteMany({});
-    await LoadOperation.deleteMany({});
-    await StopVerification.deleteMany({ vehicleId });
-    await Payment.deleteMany({});
-    await User.deleteMany({ username: { $in: [shipperUsername, 'manager-lifecycle'] } });
+    // Scoped safe cleanup
+    const existingTrips = await Trip.find({ vehicleId }, 'tripId');
+    const tripIds = existingTrips.map(t => t.tripId);
+    const existingPlans = await LoadPlan.find({ vehicleId }, '_id');
+    const planIds = existingPlans.map(p => p._id);
+
+    await safeDeleteMany(Trip, { vehicleId });
+    await safeDeleteMany(TripStop, { $or: [{ tripId: { $in: tripIds } }, { stopId: { $regex: /^STP-LIVE-/ } }] });
+    await safeDeleteMany(Vehicle, { vehicleId });
+    await safeDeleteMany(Route, { routeId });
+    await safeDeleteMany(Shipment, { shipperId: shipperUsername });
+    await safeDeleteMany(Booking, { shipperId: shipperUsername });
+    await safeDeleteMany(LoadPlan, { vehicleId });
+    await safeDeleteMany(LoadAssignment, { $or: [{ loadPlan: { $in: planIds } }, { loadPlanId: { $regex: /^LP-/ } }] });
+    await safeDeleteMany(LoadOperation, { tripId: { $in: tripIds } });
+    await safeDeleteMany(StopVerification, { vehicleId });
+    await safeDeleteMany(Payment, { shipperId: shipperUsername });
+    await safeDeleteMany(User, { username: { $in: [shipperUsername, 'manager-lifecycle'] } });
 
     const managerUser = await User.create({
       username: 'manager-lifecycle',
@@ -218,7 +223,7 @@ const runLiveTripLifecycleTestSuite = async () => {
     // ── TEST 2: WRONG STOP SCAN ──────────────────────────────────
     console.log('\n[TEST 2] Testing Wrong Stop Token Rejection...');
     try {
-      await executeStopLifecycleOperational({ tripId, vehicleId, qrToken: 'QR-INVALID-TOKEN' });
+      await executeStopLifecycleOperational({ tripId, vehicleId, stopId: 'STP-LC-2', qrToken: 'QR-INVALID-TOKEN' });
       throw new Error('Test 2 Failed: Did not reject invalid token');
     } catch (err) {
       if (err.status !== 400) throw err;
@@ -228,7 +233,7 @@ const runLiveTripLifecycleTestSuite = async () => {
     // ── TEST 3: SKIPPED STOP ATTEMPT ─────────────────────────────
     console.log('\n[TEST 3] Testing Skipped Stop Rejection (Expected Salem #2, Scanned Coimbatore #3)...');
     try {
-      await executeStopLifecycleOperational({ tripId, vehicleId, qrToken: 'QR-CBE-3' });
+      await executeStopLifecycleOperational({ tripId, vehicleId, stopId: 'STP-LC-3', qrToken: 'QR-CBE-3' });
       throw new Error('Test 3 Failed: Did not reject skipped stop');
     } catch (err) {
       if (err.status !== 400 || !err.message.includes('Cannot skip stops')) throw err;
@@ -241,6 +246,7 @@ const runLiveTripLifecycleTestSuite = async () => {
     const stop2FirstCall = await executeStopLifecycleOperational({
       tripId,
       vehicleId,
+      stopId: 'STP-LC-2',
       qrToken: 'QR-SLM-2',
       idempotencyKey: idemKey,
       performedBy: 'driver-test'
@@ -253,6 +259,7 @@ const runLiveTripLifecycleTestSuite = async () => {
     const stop2ReplayCall = await executeStopLifecycleOperational({
       tripId,
       vehicleId,
+      stopId: 'STP-LC-2',
       qrToken: 'QR-SLM-2',
       idempotencyKey: idemKey,
       performedBy: 'driver-test'
@@ -295,7 +302,7 @@ const runLiveTripLifecycleTestSuite = async () => {
     // ── TEST 8: DUPLICATE SCAN REJECTION (WITHOUT IDEMPOTENCY KEY)
     console.log('\n[TEST 8] Testing Duplicate Scan Rejection for already completed stop (Salem)...');
     try {
-      await executeStopLifecycleOperational({ tripId, vehicleId, qrToken: 'QR-SLM-2', idempotencyKey: 'NEW-KEY' });
+      await executeStopLifecycleOperational({ tripId, vehicleId, stopId: 'STP-LC-2', qrToken: 'QR-SLM-2', idempotencyKey: 'NEW-KEY' });
       throw new Error('Test 8 Failed: Did not reject duplicate scan');
     } catch (err) {
       if (err.status !== 400) throw err;
@@ -316,6 +323,7 @@ const runLiveTripLifecycleTestSuite = async () => {
     const stop3Res = await executeStopLifecycleOperational({
       tripId,
       vehicleId,
+      stopId: 'STP-LC-3',
       qrToken: 'QR-CBE-3',
       idempotencyKey: 'IDEM-CBE-001',
       performedBy: 'driver-test'
@@ -347,7 +355,7 @@ const runLiveTripLifecycleTestSuite = async () => {
     });
 
     try {
-      await executeStopLifecycleOperational({ tripId, vehicleId, qrToken: 'QR-MDU-4', idempotencyKey: 'IDEM-MDU-FAIL' });
+      await executeStopLifecycleOperational({ tripId, vehicleId, stopId: 'STP-LC-4', qrToken: 'QR-MDU-4', idempotencyKey: 'IDEM-MDU-FAIL' });
       throw new Error('Test 10 Failed: Final stop allowed completion with undelivered package!');
     } catch (err) {
       if (err.status !== 400 || !err.message.includes('undelivered')) throw err;
@@ -362,6 +370,7 @@ const runLiveTripLifecycleTestSuite = async () => {
     const finalStopRes = await executeStopLifecycleOperational({
       tripId,
       vehicleId,
+      stopId: 'STP-LC-4',
       qrToken: 'QR-MDU-4',
       idempotencyKey: 'IDEM-MDU-FINAL',
       performedBy: 'driver-test'
@@ -398,24 +407,25 @@ const runLiveTripLifecycleTestSuite = async () => {
       console.log('✅ TEST 11 PASSED: Transaction rollback verified! Trip remained in PLANNED state with 0 dirty writes.');
     }
 
-    // Cleanup
-    await Trip.deleteMany({ vehicleId });
-    await Trip.deleteOne({ tripId: dummyTripId });
-    await TripStop.deleteMany({});
-    await Vehicle.deleteMany({ vehicleId });
-    await Route.deleteMany({ routeId });
-    await Shipment.deleteMany({ shipperId: shipperUsername });
-    await Booking.deleteMany({ shipperId: shipperUsername });
-    await LoadPlan.deleteMany({ vehicleId });
-    await LoadAssignment.deleteMany({});
-    await LoadOperation.deleteMany({});
-    await StopVerification.deleteMany({ vehicleId });
-    await Payment.deleteMany({});
-    await User.deleteMany({ username: { $in: [shipperUsername, 'manager-lifecycle'] } });
+    // Scoped safe cleanup
+    await safeDeleteMany(Trip, { vehicleId });
+    await safeDeleteMany(Trip, { tripId: dummyTripId });
+    await safeDeleteMany(TripStop, { tripId });
+    await safeDeleteMany(Vehicle, { vehicleId });
+    await safeDeleteMany(Route, { routeId });
+    await safeDeleteMany(Shipment, { shipperId: shipperUsername });
+    await safeDeleteMany(Booking, { shipperId: shipperUsername });
+    await safeDeleteMany(LoadPlan, { vehicleId });
+    await safeDeleteMany(LoadAssignment, { loadPlanId: `LP-${tripId}-v1` });
+    await safeDeleteMany(LoadOperation, { tripId });
+    await safeDeleteMany(StopVerification, { vehicleId });
+    await safeDeleteMany(Payment, { shipperId: shipperUsername });
+    await safeDeleteMany(User, { username: { $in: [shipperUsername, 'manager-lifecycle'] } });
 
     console.log('\n===============================================================');
     console.log('🎉 ALL 11 LIVE TRIP OPERATIONAL LIFECYCLE TESTS PASSED (100%)');
     console.log('===============================================================');
+    await mongoose.disconnect();
     process.exit(0);
   } catch (error) {
     console.error('\n❌ Live Trip Lifecycle Test Suite Failed:', error);

@@ -294,6 +294,7 @@ async function runLifecycleParitySuite() {
 
   const kanchiResult = await executeStopLifecycleOperational({
     tripId,
+    stopId: 'STP-2',
     secureToken: tokenKanchi
   });
 
@@ -317,6 +318,7 @@ async function runLifecycleParitySuite() {
 
   const velloreResult = await executeStopLifecycleOperational({
     tripId,
+    stopId: 'STP-3',
     secureToken: tokenVellore
   });
 
@@ -359,6 +361,7 @@ async function runLifecycleParitySuite() {
 
   const hosurResult = await executeStopLifecycleOperational({
     tripId,
+    stopId: 'STP-4',
     secureToken: tokenHosur
   });
 
@@ -396,6 +399,7 @@ async function runLifecycleParitySuite() {
 
   const bangaloreResult = await executeStopLifecycleOperational({
     tripId,
+    stopId: 'STP-5',
     secureToken: tokenBangalore
   });
 

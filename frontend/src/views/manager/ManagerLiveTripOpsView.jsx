@@ -107,6 +107,10 @@ const ManagerLiveTripOpsView = () => {
 
   const handleVerifyStopArrival = async (stopArg, stopIndexArg) => {
     if (!selectedTripId || !tripDetail) return;
+    if (!['DISPATCHED', 'IN_TRANSIT', 'AT_STOP', 'OPERATIONS_IN_PROGRESS'].includes(tripDetail.status)) {
+      setError(`Trip is currently '${tripDetail.status}'. Please click 'Dispatch Truck & Start Transit' first before verifying intermediate stop arrivals.`);
+      return;
+    }
     setDetailLoading(true);
     setError(null);
     try {
@@ -115,6 +119,8 @@ const ManagerLiveTripOpsView = () => {
 
       if (stopIndexArg !== undefined && stopsList[stopIndexArg]) {
         targetStopObj = stopsList[stopIndexArg];
+      } else if (stopArg && typeof stopArg === 'object' && stopArg.stopId) {
+        targetStopObj = stopArg;
       } else {
         targetStopObj =
           stopsList.find((s, idx) => idx > 0 && s.verificationStatus !== 'COMPLETED') ||
@@ -122,15 +128,20 @@ const ManagerLiveTripOpsView = () => {
           stopsList[stopsList.length - 1];
       }
 
+      const resolvedIndex = stopIndexArg !== undefined
+        ? stopIndexArg
+        : stopsList.findIndex((s, idx) => idx > 0 && s.verificationStatus !== 'COMPLETED');
+
       const token = targetStopObj?.secureToken || targetStopObj?.qrToken || '';
-      const stopId = targetStopObj?.stopId;
+      const stopId = targetStopObj?.stopId || (typeof stopArg === 'string' ? stopArg : targetStopObj?.location || '');
 
       const payload = {
         tripId: selectedTripId,
         vehicleId: tripDetail.vehicleId,
         qrToken: token,
         secureToken: token,
-        stopId: stopId
+        stopId: stopId,
+        stopIndex: resolvedIndex >= 0 ? resolvedIndex : undefined
       };
 
       const res = await api.post('/transit/verify-stop', payload);
@@ -703,17 +714,23 @@ const ManagerLiveTripOpsView = () => {
               <OperationalLoadVisualizer
                 tripId={tripDetail.tripId}
                 vehicleId={tripDetail.vehicleId}
+                routeId={tripDetail.routeId}
+                stops={tripDetail.stops}
+                route={{
+                  routeId: tripDetail.routeId,
+                  stops: tripDetail.stops
+                }}
+                currentStop={tripDetail.currentStop || tripDetail.stops?.[tripDetail.currentStopIndex || 0] || 'Chennai'}
+                nextStop={tripDetail.stops?.[Math.min(tripDetail.stops.length - 1, (tripDetail.currentStopIndex || 0) + 1)] || ''}
+                currentStopIndex={tripDetail.currentStopIndex || 0}
                 truckSpecs={{
                   capacityVolume: truckVol,
                   capacityWeight: truckWt,
                   dimensions: { length: truckLength, width: truckWidth, height: truckHeight }
                 }}
-                route={{
-                  routeId: tripDetail.routeId,
-                  stops: tripDetail.stops || ['Chennai', 'Kanchipuram', 'Vellore', 'Hosur', 'Bangalore']
-                }}
-                currentStopIndex={tripDetail.currentStopIndex || 0}
-                assignments={onTruckOnly}
+                truckDimensions={{ length: truckLength, width: truckWidth, height: truckHeight }}
+                truckCapacity={{ volume: truckVol, weight: truckWt }}
+                assignments={currentAssignments}
                 isLocked={true}
                 loadPlanStatus={tripDetail.latestPlan?.status || 'LOCKED'}
               />

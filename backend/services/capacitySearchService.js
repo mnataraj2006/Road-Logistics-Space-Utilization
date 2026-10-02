@@ -2,6 +2,8 @@ import Vehicle from '../models/Vehicle.js';
 import Route from '../models/Route.js';
 import Booking from '../models/Booking.js';
 import Trip from '../models/Trip.js';
+import Shipment from '../models/Shipment.js';
+import Payment from '../models/Payment.js';
 import crypto from 'crypto';
 import { calculateDeterministicPrice } from './pricingService.js';
 import { recordAuditEvent } from './auditService.js';
@@ -68,7 +70,7 @@ export const searchAvailableTruckSpace = async ({
   dayEnd.setUTCHours(23, 59, 59, 999);
 
   // 1. Fetch all active vehicles
-  const activeVehicles = await Vehicle.find({ status: 'Active' });
+  const activeVehicles = await Vehicle.find({ status: { $in: ['Active', 'AVAILABLE', 'ASSIGNED', 'IN_TRANSIT'] } });
   if (!activeVehicles.length) {
     return {
       query: { pickup, delivery, date: dayStart.toISOString().split('T')[0], volume: reqVol, weight: reqWt },
@@ -343,7 +345,7 @@ export const bookTruckCapacity = async ({
   const reqWt = parseFloat(weight);
 
   // 1. Verify vehicle exists and is active
-  const vehicle = await Vehicle.findOne({ vehicleId, status: 'Active' }).session(session);
+  const vehicle = await Vehicle.findOne({ vehicleId, status: { $in: ['Active', 'AVAILABLE', 'ASSIGNED', 'IN_TRANSIT'] } }).session(session);
   if (!vehicle) {
     throw { status: 404, message: `Truck '${vehicleId}' is not active or not found.` };
   }
@@ -413,34 +415,56 @@ export const bookTruckCapacity = async ({
     }
   }
 
-  // 5. Calculate price
+  // 5. Calculate price using canonical deterministic pricing service
   const numOccupiedHops = dIdx - pIdx;
   const fractionOfRoute = numOccupiedHops / numSegments;
   const distanceOccupiedKm = Math.round(route.distance * fractionOfRoute);
-  const distFactor = 1.0 + (distanceOccupiedKm / 1000);
-  const ratePerCbm = vehicle.ratePerCbm || (route.baseRate ? route.baseRate / 20 : 150);
-  const ratePerKg = vehicle.ratePerKg || 5;
-  const baseVolPrice = reqVol * ratePerCbm * distFactor;
-  const baseWtPrice = reqWt * ratePerKg * (distanceOccupiedKm / 500);
-  const revenue = Math.round(Math.max(baseVolPrice, baseWtPrice * 1.2));
 
-  // 6. Generate IDs
+  let maxCurrentVolUtil = 0;
+  for (let i = pIdx; i < dIdx; i++) {
+    const curVolUtil = vehicle.capacityVolume > 0 ? (segVol[i] / vehicle.capacityVolume) * 100 : 0;
+    if (curVolUtil > maxCurrentVolUtil) maxCurrentVolUtil = curVolUtil;
+  }
+
+  const pricingStatement = calculateDeterministicPrice({
+    distanceKm: distanceOccupiedKm,
+    volume: reqVol,
+    weight: reqWt,
+    cargoType: 'STANDARD',
+    serviceLevel: 'STANDARD',
+    truckType: vehicle.type,
+    segmentUtilization: maxCurrentVolUtil
+  });
+  const revenue = pricingStatement.finalPrice;
+
+  // 6. Generate Unique IDs
   const count = await Booking.countDocuments({}).session(session);
-  const bookingId = `BKG-${String(count + 1).padStart(6, '0')}`;
-  const shipmentId = `SHP-${bookingId}`;
+  let nextNum = count + 1;
+  let bookingId = `BKG-${String(nextNum).padStart(6, '0')}`;
+  let shipmentId = `SHP-${bookingId}`;
+  while (await Shipment.findOne({ shipmentId }).session(session)) {
+    nextNum++;
+    bookingId = `BKG-${String(nextNum).padStart(6, '0')}`;
+    shipmentId = `SHP-${bookingId}`;
+  }
 
   // 7. Atomic DB Writes
-  const { default: Shipment } = await import('../models/Shipment.js');
   const shipment = new Shipment({
     shipmentId,
     bookingId,
     customer: customerUser._id,
+    customerId: customerUser.username || String(customerUser._id),
     shipperId: customerUser.username,
     cargoDescription,
     packageCount: 1,
     length: parseFloat(length) || 0,
     width: parseFloat(width) || 0,
     height: parseFloat(height) || 0,
+    dimensions: {
+      length: parseFloat(length) || 0,
+      width: parseFloat(width) || 0,
+      height: parseFloat(height) || 0
+    },
     volume: reqVol,
     weight: reqWt,
     pickupStop: pickup,
@@ -448,7 +472,12 @@ export const bookTruckCapacity = async ({
     requestedDate: targetDate,
     organizationId: vehicle.organizationId,
     logisticsCompanyName: vehicle.logisticsCompanyName || '',
-    status: 'ALLOCATED',
+    allocatedVehicleId: vehicle.vehicleId,
+    allocatedRouteId: route.routeId,
+    carrierId: vehicle.carrierId,
+    status: 'BOOKED',
+    allocationStatus: 'AVAILABLE_FOR_OPTIMIZATION',
+    isLocked: false,
     invoiceNumber,
     invoiceValue: Number(invoiceValue) || 0
   });
@@ -483,12 +512,12 @@ export const bookTruckCapacity = async ({
     cargoDescription,
     invoiceNumber,
     invoiceValue: Number(invoiceValue) || 0,
-    status: 'ALLOCATED'
+    status: 'BOOKED',
+    allocationStatus: 'AVAILABLE_FOR_OPTIMIZATION'
   });
   await booking.save({ session });
 
   // Create payment record
-  const { default: Payment } = await import('../models/Payment.js');
   const payment = new Payment({
     booking: booking._id,
     bookingId: booking.bookingId,

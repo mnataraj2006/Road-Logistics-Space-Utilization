@@ -4,13 +4,40 @@ import axios from 'axios';
 
 const ManagerStopOpsView = () => {
   const [tripId, setTripId] = useState('');
+  const [stopId, setStopId] = useState('');
   const [tokenInput, setTokenInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [verifyResult, setVerifyResult] = useState(null);
   const [error, setError] = useState(null);
 
+  const handleTokenChange = (val) => {
+    setTokenInput(val);
+    if (val.startsWith('STP-SEC.')) {
+      try {
+        const parts = val.split('.');
+        if (parts.length === 3) {
+          let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+          while (b64.length % 4) b64 += '=';
+          const payload = JSON.parse(atob(b64));
+          if (payload.stopId && !stopId) {
+            setStopId(payload.stopId);
+          }
+          if (payload.tripId && !tripId) {
+            setTripId(payload.tripId);
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+  };
+
   const handleVerifyToken = async (e) => {
     if (e) e.preventDefault();
+    if (!stopId.trim()) {
+      setError('Stop Identifier (stopId) is required for verification.');
+      return;
+    }
     setLoading(true);
     setError(null);
     setVerifyResult(null);
@@ -22,8 +49,10 @@ const ManagerStopOpsView = () => {
       const response = await axios.post(
         '/api/transit/verify-stop',
         {
-          tripId,
-          qrToken: tokenInput,
+          tripId: tripId.trim(),
+          stopId: stopId.trim(),
+          qrToken: tokenInput.trim(),
+          secureToken: tokenInput.trim(),
           performedBy: 'manager-ops'
         },
         { headers: authHeader }
@@ -102,6 +131,20 @@ const ManagerStopOpsView = () => {
 
           <div>
             <label className="block text-xs font-bold text-gray-700 mb-1">
+              Stop Identifier (stopId)
+            </label>
+            <input
+              type="text"
+              value={stopId}
+              onChange={(e) => setStopId(e.target.value)}
+              placeholder="e.g. STP-2 or Salem"
+              required
+              className="w-full px-3 py-2 text-xs font-semibold border border-gray-300 rounded-xl focus:border-emerald-500 outline-none"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-gray-700 mb-1">
               Scanned Stop Security Token (or HMAC STP-SEC... string)
             </label>
             <div className="relative">
@@ -109,7 +152,7 @@ const ManagerStopOpsView = () => {
               <input
                 type="text"
                 value={tokenInput}
-                onChange={(e) => setTokenInput(e.target.value)}
+                onChange={(e) => handleTokenChange(e.target.value)}
                 placeholder="Scan QR or paste STP-SEC token / QR token"
                 required
                 className="w-full pl-9 pr-3 py-2 text-xs font-semibold border border-gray-300 rounded-xl focus:border-emerald-500 outline-none"

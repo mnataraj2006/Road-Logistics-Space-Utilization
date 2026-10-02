@@ -268,6 +268,7 @@ export async function runAcceptanceTestSuite() {
 
     const salemArrival = await executeStopLifecycleOperational({
       tripId,
+      stopId: 'STP-2',
       scannedToken: salemStop.secureToken,
       scannedAt: new Date(),
       performedBy: 'driver_ravi',
@@ -302,6 +303,7 @@ export async function runAcceptanceTestSuite() {
 
     const coimbatoreArrival = await executeStopLifecycleOperational({
       tripId,
+      stopId: 'STP-3',
       scannedToken: coimbatoreStop.secureToken,
       scannedAt: new Date(),
       performedBy: 'driver_ravi',
@@ -320,6 +322,7 @@ export async function runAcceptanceTestSuite() {
 
     const maduraiArrival = await executeStopLifecycleOperational({
       tripId,
+      stopId: 'STP-4',
       scannedToken: maduraiStop.secureToken,
       scannedAt: new Date(),
       performedBy: 'driver_ravi',
@@ -409,6 +412,7 @@ export async function runAcceptanceTestSuite() {
 
       await executeStopLifecycleOperational({
         tripId: forgedTripId,
+        stopId: 'STP-3',
         scannedToken: tokenStop3.secureToken,
         scannedAt: new Date(),
         performedBy: 'malicious_driver'
@@ -422,6 +426,7 @@ export async function runAcceptanceTestSuite() {
     try {
       await executeStopLifecycleOperational({
         tripId,
+        stopId: 'STP-2',
         scannedToken: salemStop.secureToken,
         scannedAt: new Date(),
         performedBy: 'driver_ravi'

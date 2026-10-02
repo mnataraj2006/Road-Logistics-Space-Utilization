@@ -1,5 +1,12 @@
 export const OPTIMIZER_VERSION = '2.4.0-deterministic-multistop';
 
+/**
+ * Authoritative geometric comparison epsilon (1 nanometer: 1e-9 meters).
+ * Provides a clean floating-point tolerance for boundary, collision, and alignment
+ * calculations without permitting physical container breaches.
+ */
+export const GEOMETRY_EPSILON = 1e-9;
+
 export const PRIORITY_WEIGHTS = {
   URGENT: 1000,
   EXPRESS: 500,

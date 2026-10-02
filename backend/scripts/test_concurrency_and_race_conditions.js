@@ -228,6 +228,7 @@ const runConcurrencyTestSuite = async () => {
     const firstCall = await executeStopLifecycleOperational({
       tripId,
       vehicleId,
+      stopId: 'STP-2',
       qrToken: 'QR-2',
       idempotencyKey,
       performedBy: 'driver-race'
@@ -241,6 +242,7 @@ const runConcurrencyTestSuite = async () => {
     const replayCall = await executeStopLifecycleOperational({
       tripId,
       vehicleId,
+      stopId: 'STP-2',
       qrToken: 'QR-2',
       idempotencyKey,
       performedBy: 'driver-race'
@@ -258,6 +260,7 @@ const runConcurrencyTestSuite = async () => {
       await executeStopLifecycleOperational({
         tripId,
         vehicleId,
+        stopId: 'STP-2',
         qrToken: 'QR-2',
         idempotencyKey: 'NEW-DIFFERENT-KEY', // Different key on already completed stop
         performedBy: 'driver-race'

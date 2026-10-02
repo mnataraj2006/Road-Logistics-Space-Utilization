@@ -1,3 +1,5 @@
+import { GEOMETRY_EPSILON } from './constants.js';
+
 /**
  * Manages segment-by-segment load state across multi-stop routes.
  */
@@ -50,7 +52,7 @@ export class SegmentTracker {
       const nextVol = this.usedVolume[seg] + volume;
       const nextWt = this.usedWeight[seg] + weight;
 
-      if (nextVol > this.truck.capacityVolume) {
+      if (nextVol > this.truck.capacityVolume + GEOMETRY_EPSILON) {
         return {
           canFit: false,
           failureReason: `Volume overflow on segment ${this.route.stops[seg]} → ${this.route.stops[seg + 1]} (Occupied: ${this.usedVolume[seg].toFixed(2)}m³ + Req: ${volume}m³ > Cap: ${this.truck.capacityVolume}m³)`,
@@ -65,7 +67,7 @@ export class SegmentTracker {
         };
       }
 
-      if (nextWt > this.truck.capacityWeight) {
+      if (nextWt > this.truck.capacityWeight + GEOMETRY_EPSILON) {
         return {
           canFit: false,
           failureReason: `Weight overflow on segment ${this.route.stops[seg]} → ${this.route.stops[seg + 1]} (Occupied: ${this.usedWeight[seg]}kg + Req: ${weight}kg > Cap: ${this.truck.capacityWeight}kg)`,

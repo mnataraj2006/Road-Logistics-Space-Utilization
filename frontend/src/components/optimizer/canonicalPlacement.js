@@ -26,6 +26,112 @@ export const DESTINATION_PALETTES = [
 const normStop = (s) => (s ? String(s).trim().toLowerCase() : '');
 
 /**
+ * Authoritative Canonical Truck Dimension Resolver.
+ * Enforces positive, finite numerical checks:
+ * - If dimension > 0 and finite: use dimension
+ * - Else if interior dimension > 0 and finite: use interior dimension
+ * - Else: use authoritative fallback dimension
+ *
+ * Prevents zero-dimension vehicles (e.g. { length: 0, width: 0, height: 0 })
+ * from collapsing truck bounds to 0 and falsely quarantining cargo.
+ * Preserves valid custom truck dimensions (e.g. 12m x 2.4m x 2.6m).
+ */
+export const resolveAuthoritativeTruckDimensions = (truckSpecs = {}, fallback = AUTHORITATIVE_TRUCK) => {
+  const isPos = (v) => v !== undefined && v !== null && Number.isFinite(Number(v)) && Number(v) > 0;
+
+  const raw = truckSpecs?.dimensions || truckSpecs || {};
+  const length = isPos(raw.length)
+    ? Number(raw.length)
+    : isPos(truckSpecs?.interiorLength)
+    ? Number(truckSpecs.interiorLength)
+    : isPos(fallback?.length)
+    ? Number(fallback.length)
+    : 13.6;
+
+  const width = isPos(raw.width)
+    ? Number(raw.width)
+    : isPos(truckSpecs?.interiorWidth)
+    ? Number(truckSpecs.interiorWidth)
+    : isPos(fallback?.width)
+    ? Number(fallback.width)
+    : 2.45;
+
+  const height = isPos(raw.height)
+    ? Number(raw.height)
+    : isPos(truckSpecs?.interiorHeight)
+    ? Number(truckSpecs.interiorHeight)
+    : isPos(fallback?.height)
+    ? Number(fallback.height)
+    : 2.8;
+
+  const capacityVolume = isPos(truckSpecs?.capacityVolume)
+    ? Number(truckSpecs.capacityVolume)
+    : isPos(fallback?.capacityVolume)
+    ? Number(fallback.capacityVolume)
+    : parseFloat((length * width * height).toFixed(3));
+
+  const capacityWeight = isPos(truckSpecs?.capacityWeight)
+    ? Number(truckSpecs.capacityWeight)
+    : isPos(fallback?.capacityWeight)
+    ? Number(fallback.capacityWeight)
+    : 20000;
+
+  return { length, width, height, capacityVolume, capacityWeight };
+};
+
+/**
+ * Authoritative Canonical Dimension Resolver.
+ * Strict resolution order:
+ * 1. Nested oriented dimensions (dimensions.dx, dimensions.dy, dimensions.dz) if finite and > 0
+ * 2. Top-level oriented dimensions (item.dx, item.dy, item.dz) if finite and > 0
+ * 3. Nested unoriented dimensions (dimensions.length, dimensions.width, dimensions.height) if finite and > 0
+ * 4. Top-level unoriented dimensions (item.length, item.width, item.height) if finite and > 0
+ */
+export const resolveAuthoritativeDimensions = (item = {}) => {
+  const isPos = (v) => v !== undefined && v !== null && Number.isFinite(Number(v)) && Number(v) > 0;
+
+  let dx = 0;
+  let dy = 0;
+  let dz = 0;
+
+  if (isPos(item.dimensions?.dx) && isPos(item.dimensions?.dy) && isPos(item.dimensions?.dz)) {
+    dx = Number(item.dimensions.dx);
+    dy = Number(item.dimensions.dy);
+    dz = Number(item.dimensions.dz);
+  } else if (isPos(item.dx) && isPos(item.dy) && isPos(item.dz)) {
+    dx = Number(item.dx);
+    dy = Number(item.dy);
+    dz = Number(item.dz);
+  } else if (isPos(item.dimensions?.length) && isPos(item.dimensions?.width) && isPos(item.dimensions?.height)) {
+    dx = Number(item.dimensions.length);
+    dy = Number(item.dimensions.width);
+    dz = Number(item.dimensions.height);
+  } else if (isPos(item.length) && isPos(item.width) && isPos(item.height)) {
+    dx = Number(item.length);
+    dy = Number(item.width);
+    dz = Number(item.height);
+  }
+
+  return { dx, dy, dz };
+};
+
+/**
+ * Authoritative Canonical Position Resolver.
+ * x = distance from FRONT CABIN toward REAR DOORS (0 = cabin, truckLength = rear doors)
+ * y = distance across truck width
+ * z = distance from FLOOR upward
+ */
+export const resolveAuthoritativePosition = (item = {}) => {
+  const isNum = (v) => v !== undefined && v !== null && Number.isFinite(Number(v));
+
+  const x = isNum(item.position?.x) ? Number(item.position.x) : isNum(item.x) ? Number(item.x) : 0;
+  const y = isNum(item.position?.y) ? Number(item.position.y) : isNum(item.y) ? Number(item.y) : 0;
+  const z = isNum(item.position?.z) ? Number(item.position.z) : isNum(item.z) ? Number(item.z) : 0;
+
+  return { x, y, z };
+};
+
+/**
  * Authoritative 3D Physical Geometry & Boundary Validator.
  *
  * Enforces the physical envelope:
@@ -36,30 +142,35 @@ const normStop = (s) => (s ? String(s).trim().toLowerCase() : '');
  * Uses oriented dimensions (dx, dy, dz) and checks full bounding box.
  *
  * @param {Object} params
- * @param {Object} params.position - { x, y, z }
- * @param {Object} params.dimensions - { dx, dy, dz } or { length, width, height }
- * @param {Object} params.truckDimensions - { length, width, height }
+ * @param {Object} [params.item] - Full package assignment object
+ * @param {Object} [params.position] - { x, y, z }
+ * @param {Object} [params.dimensions] - { dx, dy, dz } or { length, width, height }
+ * @param {Object} [params.truckDimensions] - { length, width, height }
  * @param {number} [params.tolerance=0.0001] - Strict numerical tolerance in meters
  * @returns {Object} Structured validation result
  */
 export const validatePackageWithinTruck = ({
+  item,
   position = {},
   dimensions = {},
   truckDimensions = {},
   tolerance = 0.0001
 } = {}) => {
-  const x = Number(position?.x ?? 0);
-  const y = Number(position?.y ?? 0);
-  const z = Number(position?.z ?? 0);
+  const resolvedPos = item ? resolveAuthoritativePosition(item) : resolveAuthoritativePosition({ position });
+  const resolvedDims = item ? resolveAuthoritativeDimensions(item) : resolveAuthoritativeDimensions({ dimensions });
 
-  // Oriented dimensions (dx, dy, dz) take precedence over unoriented (length, width, height)
-  const dx = Number(dimensions?.dx ?? dimensions?.length ?? 0);
-  const dy = Number(dimensions?.dy ?? dimensions?.width ?? 0);
-  const dz = Number(dimensions?.dz ?? dimensions?.height ?? 0);
+  const x = resolvedPos.x;
+  const y = resolvedPos.y;
+  const z = resolvedPos.z;
 
-  const truckL = Number(truckDimensions?.length ?? truckDimensions?.interiorLength ?? AUTHORITATIVE_TRUCK.length);
-  const truckW = Number(truckDimensions?.width ?? truckDimensions?.interiorWidth ?? AUTHORITATIVE_TRUCK.width);
-  const truckH = Number(truckDimensions?.height ?? truckDimensions?.interiorHeight ?? AUTHORITATIVE_TRUCK.height);
+  const dx = resolvedDims.dx;
+  const dy = resolvedDims.dy;
+  const dz = resolvedDims.dz;
+
+  const authTruck = resolveAuthoritativeTruckDimensions(truckDimensions, AUTHORITATIVE_TRUCK);
+  const truckL = authTruck.length;
+  const truckW = authTruck.width;
+  const truckH = authTruck.height;
 
   const violations = [];
 
@@ -174,9 +285,10 @@ export const validatePackageWithinTruck = ({
  * Normalizes raw assignment data into authoritative canonical placements.
  */
 export const normalizeCanonicalPlacements = (assignments = [], truckSpecs = {}, stops = []) => {
-  const truckLength = Number(truckSpecs?.dimensions?.length || truckSpecs?.length || AUTHORITATIVE_TRUCK.length);
-  const truckWidth = Number(truckSpecs?.dimensions?.width || truckSpecs?.width || AUTHORITATIVE_TRUCK.width);
-  const truckHeight = Number(truckSpecs?.dimensions?.height || truckSpecs?.height || AUTHORITATIVE_TRUCK.height);
+  const authTruck = resolveAuthoritativeTruckDimensions(truckSpecs, AUTHORITATIVE_TRUCK);
+  const truckLength = authTruck.length;
+  const truckWidth = authTruck.width;
+  const truckHeight = authTruck.height;
 
   const resolvedStops = (Array.isArray(stops) && stops.length > 0)
     ? stops
@@ -202,14 +314,23 @@ export const normalizeCanonicalPlacements = (assignments = [], truckSpecs = {}, 
     }
 
     // Exact physical coordinates from optimizer
-    const x = Number(item.position?.x ?? item.x ?? 0);
-    const y = Number(item.position?.y ?? item.y ?? 0);
-    const z = Number(item.position?.z ?? item.z ?? 0);
+    const resolvedPos = resolveAuthoritativePosition(item);
+    const x = resolvedPos.x;
+    const y = resolvedPos.y;
+    const z = resolvedPos.z;
 
     // Exact physical dimensions: ORIENTED dimensions (dx, dy, dz) take absolute precedence
-    const dx = Number(item.dimensions?.dx ?? item.dx ?? item.dimensions?.length ?? item.length ?? 1.2);
-    const dy = Number(item.dimensions?.dy ?? item.dy ?? item.dimensions?.width ?? item.width ?? 1.0);
-    const dz = Number(item.dimensions?.dz ?? item.dz ?? item.dimensions?.height ?? item.height ?? 1.2);
+    const resolvedDims = resolveAuthoritativeDimensions(item);
+    let dx = resolvedDims.dx;
+    let dy = resolvedDims.dy;
+    let dz = resolvedDims.dz;
+
+    // Fallback if completely missing from any field
+    if (dx <= 0 || dy <= 0 || dz <= 0) {
+      dx = dx > 0 ? dx : 1.2;
+      dy = dy > 0 ? dy : 1.0;
+      dz = dz > 0 ? dz : 1.2;
+    }
 
     const volume = Number(item.volume ?? (dx * dy * dz).toFixed(3));
     const weight = Number(item.weight ?? 500);
@@ -297,9 +418,10 @@ export const validateAuthoritativePlacements = (canonicalItems = [], truck = {},
   const validItems = [];
   const invalidItems = [];
 
-  const truckL = Number(truck.length || AUTHORITATIVE_TRUCK.length);
-  const truckW = Number(truck.width || AUTHORITATIVE_TRUCK.width);
-  const truckH = Number(truck.height || AUTHORITATIVE_TRUCK.height);
+  const authTruck = resolveAuthoritativeTruckDimensions(truck, AUTHORITATIVE_TRUCK);
+  const truckL = authTruck.length;
+  const truckW = authTruck.width;
+  const truckH = authTruck.height;
 
   const numStops = Math.max(2, (stops || []).length);
   const numSegments = numStops - 1;
@@ -376,4 +498,80 @@ export const validateAuthoritativePlacements = (canonicalItems = [], truck = {},
     accessibilityConflicts,
     isAccessible: accessibilityConflicts.length === 0
   };
+};
+
+/**
+ * Authoritative Shared Canonical Renderable Assignments Helper.
+ * Both 2D and 3D visualizers consume this exact function to guarantee 100% parity.
+ */
+export const getCanonicalRenderableAssignments = ({
+  assignments = [],
+  canonicalItems: preNormalizedItems = null,
+  truckDimensions = {},
+  stops = [],
+  selectedSegment = 0
+} = {}) => {
+  const authTruck = resolveAuthoritativeTruckDimensions(truckDimensions, AUTHORITATIVE_TRUCK);
+  const truckL = authTruck.length;
+  const truckW = authTruck.width;
+  const truckH = authTruck.height;
+
+  const canonicalItems = Array.isArray(preNormalizedItems) && preNormalizedItems.length > 0
+    ? preNormalizedItems
+    : normalizeCanonicalPlacements(
+        assignments,
+        { length: truckL, width: truckW, height: truckH },
+        stops
+      );
+
+  const activeItems = getActiveSegmentCargo(canonicalItems, selectedSegment);
+
+  const validActiveItems = [];
+  const quarantinedActiveItems = [];
+
+  activeItems.forEach((item) => {
+    const check = validatePackageWithinTruck({
+      item,
+      truckDimensions: { length: truckL, width: truckW, height: truckH }
+    });
+    if (check.valid) {
+      validActiveItems.push(item);
+    } else {
+      quarantinedActiveItems.push({ item, violations: check.violations });
+    }
+  });
+
+  const futureItems = canonicalItems.filter((item) => {
+    if (selectedSegment === 'ALL' || selectedSegment === -1) return false;
+    return item.pickupIndex > Number(selectedSegment);
+  });
+
+  const deliveredItems = canonicalItems.filter((item) => {
+    if (selectedSegment === 'ALL' || selectedSegment === -1) return false;
+    return item.deliveryIndex <= Number(selectedSegment);
+  });
+
+  return {
+    canonicalItems,
+    activeItems,
+    validActiveItems,
+    quarantinedActiveItems,
+    futureItems,
+    deliveredItems,
+    totalPlannedCount: canonicalItems.length,
+    activeCount: validActiveItems.length,
+    quarantinedCount: quarantinedActiveItems.length,
+    futureCount: futureItems.length
+  };
+};
+
+/**
+ * Diagnostic parity validator for multi-stop segment counts and rendering.
+ */
+export const checkSegmentParity = (canonicalItems = [], segmentIndex = 0) => {
+  if (segmentIndex === 'ALL' || segmentIndex === -1) {
+    return canonicalItems.length;
+  }
+  const sIdx = Number(segmentIndex);
+  return canonicalItems.filter(item => item.pickupIndex <= sIdx && item.deliveryIndex > sIdx).length;
 };

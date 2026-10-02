@@ -24,13 +24,22 @@ import {
   Clock,
   UserCheck,
   Check,
-  Eye
+  Eye,
+  Zap,
+  BarChart3,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 import api from '../../services/api';
 import Trailer2DView from '../../components/optimizer/Trailer2DView';
 import OperationalLoadVisualizer from '../../components/optimizer/OperationalLoadVisualizer';
+import { resolveAuthoritativeDimensions, resolveAuthoritativePosition } from '../../components/optimizer/canonicalPlacement';
 
 const ManagerOptimizationView = () => {
+  // ─── Mode toggle ──────────────────────────────────────────────────────────
+  const [activeMode, setActiveMode] = useState('single'); // 'single' | 'fleet'
+
+  // ─── Single-truck state (existing) ───────────────────────────────────────
   const [trips, setTrips] = useState([]);
   const [selectedTripId, setSelectedTripId] = useState('');
   const [candidateShipments, setCandidateShipments] = useState([]);
@@ -49,12 +58,97 @@ const ManagerOptimizationView = () => {
   const [successMessage, setSuccessMessage] = useState(null);
   const [viewMode, setViewMode] = useState('3D'); // '3D' | '2D'
 
+  // ─── Fleet optimization state ─────────────────────────────────────────────
+  const [allVehicles, setAllVehicles] = useState([]);
+  const [selectedVehicleIds, setSelectedVehicleIds] = useState([]);
+  const [fleetRouteId, setFleetRouteId] = useState('');
+  const [allRoutes, setAllRoutes] = useState([]);
+  const [fleetShipmentIds, setFleetShipmentIds] = useState([]); // empty = auto-select
+  const [fleetResult, setFleetResult] = useState(null);
+  const [fleetLoading, setFleetLoading] = useState(false);
+  const [fleetError, setFleetError] = useState(null);
+  const [fleetSuccess, setFleetSuccess] = useState(null);
+  const [expandedTruckId, setExpandedTruckId] = useState(null);
+  const [fleetViewMode, setFleetViewMode] = useState({}); // { vehicleId: '2D'|'3D' }
+
   const visualizerSectionRef = useRef(null);
 
   const scrollToVisualizer = (mode) => {
     setViewMode(mode);
     if (visualizerSectionRef.current) {
       visualizerSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+
+  // ─── Fleet: fetch vehicles + routes on mount ───────────────────────────────
+  const fetchFleetData = useCallback(async () => {
+    try {
+      const [vRes, rRes] = await Promise.allSettled([
+        api.get('/vehicles'),
+        api.get('/routes')
+      ]);
+      if (vRes.status === 'fulfilled') {
+        const docs = Array.isArray(vRes.value.data) ? vRes.value.data : vRes.value.data?.vehicles || [];
+        setAllVehicles(docs);
+      }
+      if (rRes.status === 'fulfilled') {
+        const docs = Array.isArray(rRes.value.data) ? rRes.value.data : rRes.value.data?.routes || [];
+        setAllRoutes(docs);
+        if (docs.length > 0 && !fleetRouteId) setFleetRouteId(docs[0].routeId || '');
+      }
+    } catch (err) {
+      console.error('fetchFleetData error:', err);
+    }
+  }, []);
+
+  useEffect(() => { fetchFleetData(); }, [fetchFleetData]);
+
+  const toggleVehicleSelection = (vid) => {
+    setSelectedVehicleIds(prev =>
+      prev.includes(vid) ? prev.filter(x => x !== vid) : [...prev, vid]
+    );
+  };
+
+  const handleFleetPreview = async () => {
+    setFleetError(null); setFleetSuccess(null); setFleetResult(null);
+    if (selectedVehicleIds.length === 0) { setFleetError('Select at least one vehicle.'); return; }
+    if (!fleetRouteId) { setFleetError('Select a route.'); return; }
+    setFleetLoading(true);
+    try {
+      const res = await api.post('/trips/fleet-optimize/preview', {
+        vehicleIds: selectedVehicleIds,
+        routeId: fleetRouteId,
+        shipmentIds: fleetShipmentIds.length > 0 ? fleetShipmentIds : undefined
+      });
+      setFleetResult(res.data);
+      if (res.data.truckPlans?.length > 0) {
+        setExpandedTruckId(res.data.truckPlans[0].truck.vehicleId);
+      }
+    } catch (err) {
+      setFleetError(err.response?.data?.message || 'Fleet preview failed.');
+    } finally {
+      setFleetLoading(false);
+    }
+  };
+
+  const handleFleetGenerate = async () => {
+    setFleetError(null); setFleetSuccess(null);
+    if (selectedVehicleIds.length === 0) { setFleetError('Select at least one vehicle.'); return; }
+    if (!fleetRouteId) { setFleetError('Select a route.'); return; }
+    if (!window.confirm(`Generate and persist load plans for ${selectedVehicleIds.length} truck(s)?`)) return;
+    setFleetLoading(true);
+    try {
+      const res = await api.post('/trips/fleet-optimize/generate', {
+        vehicleIds: selectedVehicleIds,
+        routeId: fleetRouteId,
+        shipmentIds: fleetShipmentIds.length > 0 ? fleetShipmentIds : undefined
+      });
+      setFleetResult(res.data);
+      setFleetSuccess(res.data.message || 'Fleet load plans generated.');
+    } catch (err) {
+      setFleetError(err.response?.data?.message || 'Fleet generation failed.');
+    } finally {
+      setFleetLoading(false);
     }
   };
 
@@ -455,22 +549,50 @@ const ManagerOptimizationView = () => {
 
   // Unified Locked Cargo Manifest
   const lockedCargoList = useMemo(() => {
-    if (allocatedCargo.length > 0) return allocatedCargo;
-    return (optimizationResult?.assignments || []).map(a => ({
-      shipmentId: a.shipmentId,
-      bookingId: a.bookingId || a.shipmentId,
-      pickup: a.segmentRange?.fromStop || a.pickupStop || 'Chennai',
-      delivery: a.segmentRange?.toStop || a.deliveryStop || 'Bangalore',
-      loadStop: a.segmentRange?.fromStop || a.pickupStop || 'Chennai',
-      unloadStop: a.segmentRange?.toStop || a.deliveryStop || 'Bangalore',
-      volume: a.volume || 24,
-      weight: a.weight || 1000,
-      dimensions: a.dimensions || { length: 4.0, width: 2.4, height: 2.5 },
-      physicalStatus: a.physicalStatus || 'WAITING_AT_ORIGIN',
-      physicalStatusDisplay: a.physicalStatusDisplay || 'WAITING FOR LOAD',
-      planStatus: 'LOCKED',
-      status: a.status || 'LOCKED'
-    }));
+    const source = (optimizationResult?.assignments && optimizationResult.assignments.length > 0)
+      ? optimizationResult.assignments
+      : allocatedCargo;
+
+    return (source || []).map(a => {
+      const aDims = resolveAuthoritativeDimensions(a);
+      const aPos = resolveAuthoritativePosition(a);
+      return {
+        ...a,
+        shipmentId: a.shipmentId,
+        bookingId: a.bookingId || a.shipmentId,
+        pickup: a.segmentRange?.fromStop || a.pickupStop || a.pickup || a.fromStop || 'Chennai',
+        delivery: a.segmentRange?.toStop || a.deliveryStop || a.delivery || a.toStop || 'Bangalore',
+        loadStop: a.segmentRange?.fromStop || a.pickupStop || a.loadStop || a.fromStop || 'Chennai',
+        unloadStop: a.segmentRange?.toStop || a.deliveryStop || a.unloadStop || a.toStop || 'Bangalore',
+        volume: a.volume || parseFloat((aDims.dx * aDims.dy * aDims.dz).toFixed(3)) || 1.0,
+        weight: a.weight || 500,
+        dx: aDims.dx,
+        dy: aDims.dy,
+        dz: aDims.dz,
+        length: aDims.dx,
+        width: aDims.dy,
+        height: aDims.dz,
+        dimensions: {
+          dx: aDims.dx,
+          dy: aDims.dy,
+          dz: aDims.dz,
+          length: aDims.dx,
+          width: aDims.dy,
+          height: aDims.dz
+        },
+        position: aPos,
+        x: aPos.x,
+        y: aPos.y,
+        z: aPos.z,
+        orientation: a.orientation || 'UPRIGHT_ORIGINAL',
+        loadingSequence: a.loadingSequence || 0,
+        unloadingSequence: a.unloadingSequence || 0,
+        physicalStatus: a.physicalStatus || 'WAITING_AT_ORIGIN',
+        physicalStatusDisplay: a.physicalStatusDisplay || 'WAITING FOR LOAD',
+        planStatus: 'LOCKED',
+        status: a.status || 'LOCKED'
+      };
+    });
   }, [allocatedCargo, optimizationResult]);
 
   // Current Physical Load Onboard Trailer
@@ -620,22 +742,54 @@ const ManagerOptimizationView = () => {
         <div>
           <h1 className="text-2xl font-black text-gray-900 tracking-tight flex items-center gap-2">
             <Sliders className="w-6 h-6 text-emerald-600" />
-            Multi-Stop Space Optimization Console
+            {activeMode === 'fleet' ? 'Fleet Multi-Truck Optimizer' : 'Multi-Stop Space Optimization Console'}
           </h1>
           <p className="text-sm text-gray-500 mt-1">
-            Generate provably valid 3D trailer loading plans respecting multi-segment route capacity, physical geometry, and LIFO accessibility.
+            {activeMode === 'fleet'
+              ? 'Allocate cargo across multiple trucks simultaneously using the fleet optimizer engine.'
+              : 'Generate provably valid 3D trailer loading plans respecting multi-segment route capacity, physical geometry, and LIFO accessibility.'}
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={fetchTripsAndCandidates}
-          disabled={loading}
-          className="inline-flex items-center gap-2 px-4 py-2 bg-white hover:bg-gray-50 text-gray-700 border border-gray-200 rounded-xl text-xs font-bold transition shadow-xs cursor-pointer self-start sm:self-auto"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-emerald-600' : ''}`} />
-          <span>Refresh State</span>
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Mode Toggle */}
+          <div className="flex items-center bg-gray-100 rounded-xl p-1 border border-gray-200">
+            <button
+              id="btn-mode-single-truck"
+              type="button"
+              onClick={() => setActiveMode('single')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                activeMode === 'single'
+                  ? 'bg-white text-emerald-700 shadow border border-gray-200'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <span className="flex items-center gap-1.5"><Truck className="w-3.5 h-3.5" />Single Truck</span>
+            </button>
+            <button
+              id="btn-mode-fleet"
+              type="button"
+              onClick={() => { setActiveMode('fleet'); fetchFleetData(); }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                activeMode === 'fleet'
+                  ? 'bg-white text-violet-700 shadow border border-gray-200'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <span className="flex items-center gap-1.5"><Zap className="w-3.5 h-3.5" />Fleet Optimizer</span>
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={fetchTripsAndCandidates}
+            disabled={loading}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-white hover:bg-gray-50 text-gray-700 border border-gray-200 rounded-xl text-xs font-bold transition shadow-xs cursor-pointer"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-emerald-600' : ''}`} />
+            <span>Refresh</span>
+          </button>
+        </div>
       </div>
 
       {/* Notifications */}
@@ -660,6 +814,265 @@ const ManagerOptimizationView = () => {
           <button onClick={() => setSuccessMessage(null)} className="text-emerald-500 hover:text-emerald-800 text-sm cursor-pointer">✕</button>
         </div>
       )}
+
+      {/* ─── FLEET OPTIMIZER PANEL ─────────────────────────────────────── */}
+      {activeMode === 'fleet' && (
+        <div className="space-y-5">
+          {fleetError && (
+            <div className="p-4 bg-red-50 border border-red-200 rounded-2xl flex items-start gap-3 text-red-800 text-xs">
+              <XCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+              <div className="flex-1"><strong className="font-bold block">Fleet Error</strong><span>{fleetError}</span></div>
+              <button onClick={() => setFleetError(null)} className="text-red-500 hover:text-red-800 cursor-pointer">✕</button>
+            </div>
+          )}
+          {fleetSuccess && (
+            <div className="p-4 bg-violet-50 border border-violet-200 rounded-2xl flex items-start gap-3 text-violet-800 text-xs">
+              <CheckCircle2 className="w-4 h-4 text-violet-600 shrink-0 mt-0.5" />
+              <div className="flex-1"><strong className="font-bold block">Fleet Optimization Complete</strong><span>{fleetSuccess}</span></div>
+              <button onClick={() => setFleetSuccess(null)} className="text-violet-500 hover:text-violet-800 cursor-pointer">✕</button>
+            </div>
+          )}
+
+          <div className="bg-white rounded-2xl border border-gray-200 p-5 shadow-xs space-y-4">
+            <h2 className="text-sm font-black text-gray-800 flex items-center gap-2">
+              <Zap className="w-4 h-4 text-violet-600" />
+              Fleet Optimization Configuration
+            </h2>
+            <div>
+              <label className="text-xs font-bold text-gray-600 block mb-1">Route</label>
+              <select
+                id="fleet-route-selector"
+                value={fleetRouteId}
+                onChange={e => setFleetRouteId(e.target.value)}
+                className="w-full border border-gray-200 rounded-xl px-3 py-2 text-xs font-semibold text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-violet-400"
+              >
+                <option value="">— Select Route —</option>
+                {allRoutes.map(r => (
+                  <option key={r.routeId} value={r.routeId}>
+                    {r.routeId} — {r.source} → {r.destination}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-xs font-bold text-gray-600">Available Vehicles ({allVehicles.length})</label>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setSelectedVehicleIds(allVehicles.filter(v => !['MAINTENANCE','INACTIVE','In Maintenance','Out of Service','IN_TRANSIT','DISPATCHED'].includes(v.status) && !['MAINTENANCE','INACTIVE','In Maintenance','Out of Service','IN_TRANSIT','DISPATCHED'].includes(v.transitStatus)).map(v => v.vehicleId))}
+                    className="text-xs text-violet-600 hover:text-violet-800 font-bold cursor-pointer">Select Available</button>
+                  <button type="button" onClick={() => setSelectedVehicleIds([])}
+                    className="text-xs text-gray-400 hover:text-gray-600 font-bold cursor-pointer">Clear</button>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-56 overflow-y-auto pr-1">
+                {allVehicles.length === 0 && (
+                  <p className="col-span-3 text-xs text-gray-400 italic text-center py-4">No vehicles found. Add vehicles in Fleet Management.</p>
+                )}
+                {allVehicles.map(v => {
+                  const isVehSelected = selectedVehicleIds.includes(v.vehicleId);
+                  const vUnavailable = ['MAINTENANCE','INACTIVE','In Maintenance','Out of Service','IN_TRANSIT','DISPATCHED'].includes(v.status) || ['MAINTENANCE','INACTIVE','In Maintenance','Out of Service','IN_TRANSIT','DISPATCHED'].includes(v.transitStatus);
+                  return (
+                    <button key={v.vehicleId} id={`fleet-veh-${v.vehicleId}`} type="button"
+                      disabled={vUnavailable}
+                      onClick={() => toggleVehicleSelection(v.vehicleId)}
+                      className={`text-left px-3 py-2.5 rounded-xl border text-xs transition cursor-pointer ${
+                        vUnavailable ? 'border-gray-100 bg-gray-50 text-gray-300 cursor-not-allowed'
+                          : isVehSelected ? 'border-violet-400 bg-violet-50 text-violet-800'
+                          : 'border-gray-200 bg-white hover:border-violet-300 text-gray-700'
+                      }`}>
+                      <div className="font-black flex items-center gap-1">
+                        <Truck className={`w-3 h-3 ${isVehSelected ? 'text-violet-600' : 'text-gray-400'}`} />
+                        {v.vehicleId}
+                        {isVehSelected && <Check className="w-3 h-3 text-violet-600 ml-auto" />}
+                      </div>
+                      <div className="text-gray-400 mt-0.5">{v.type} · {v.capacityVolume}m³ · {v.capacityWeight}kg</div>
+                      <div className={`mt-0.5 inline-flex px-1.5 py-0.5 rounded-full text-xs font-bold ${
+                        vUnavailable ? 'bg-red-50 text-red-400' : 'bg-emerald-50 text-emerald-600'
+                      }`}>{vUnavailable ? (v.status || v.transitStatus) : 'Available'}</div>
+                    </button>
+                  );
+                })}
+              </div>
+              {selectedVehicleIds.length > 0 && (
+                <p className="text-xs text-violet-600 font-bold mt-1">{selectedVehicleIds.length} truck(s) selected</p>
+              )}
+            </div>
+            <div className="flex items-center gap-3 pt-1">
+              <button id="btn-fleet-preview" type="button" onClick={handleFleetPreview} disabled={fleetLoading}
+                className="flex-1 px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-xs font-black flex items-center justify-center gap-2 transition cursor-pointer shadow-md shadow-violet-600/20">
+                {fleetLoading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                {fleetLoading ? 'Running Fleet Optimizer...' : 'Preview Fleet Allocation'}
+              </button>
+              {fleetResult?.truckPlans && (
+                <button id="btn-fleet-generate" type="button" onClick={handleFleetGenerate} disabled={fleetLoading}
+                  className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-black flex items-center justify-center gap-2 transition cursor-pointer shadow-md shadow-emerald-600/20">
+                  <FileText className="w-3.5 h-3.5" />
+                  Generate &amp; Persist
+                </button>
+              )}
+            </div>
+          </div>
+
+          {fleetResult && (
+            <div className="space-y-4">
+              <div className="bg-gradient-to-r from-violet-50 to-indigo-50 border border-violet-200 rounded-2xl p-4">
+                <div className="flex items-center justify-between flex-wrap gap-3">
+                  <h3 className="text-sm font-black text-violet-900 flex items-center gap-1.5">
+                    <BarChart3 className="w-4 h-4 text-violet-600" />
+                    Fleet Summary
+                    {fleetResult.preview && <span className="ml-1 px-2 py-0.5 bg-amber-100 text-amber-700 text-xs rounded-full font-bold">Preview</span>}
+                  </h3>
+                  <div className="flex flex-wrap gap-4 text-xs">
+                    <span className="font-bold text-violet-800">Trucks Activated: <span className="text-violet-600">{fleetResult.summary?.trucksActivated ?? fleetResult.trucksActivated ?? 0}</span></span>
+                    <span className="font-bold text-violet-800">Assigned: <span className="text-violet-600">{fleetResult.summary?.totalAssigned ?? 0}</span></span>
+                    <span className="font-bold text-violet-800">Unassigned: <span className={fleetResult.unassignedShipments?.length > 0 ? 'text-red-500' : 'text-emerald-600'}>{fleetResult.unassignedShipments?.length ?? 0}</span></span>
+                    <span className="font-bold text-violet-800">Fleet Vol: <span className="text-violet-600">{fleetResult.summary?.fleetVolumeUtilization ?? '—'}%</span></span>
+                    <span className={`font-bold px-2 py-0.5 rounded-full ${
+                      (fleetResult.summary?.isFullyAssigned || fleetResult.isFullyAssigned) ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
+                    }`}>{(fleetResult.summary?.isFullyAssigned || fleetResult.isFullyAssigned) ? '✓ Fully Assigned' : '⚠ Partial'}</span>
+                  </div>
+                </div>
+              </div>
+
+              {(fleetResult.truckPlans || fleetResult.plans || []).map((plan, idx) => {
+                const truck = plan.truck || {};
+                const vid = truck.vehicleId || plan.vehicleId || `truck-${idx}`;
+                const assignments = plan.assignments || [];
+                const isExpanded = expandedTruckId === vid;
+                const volUtil = plan.utilization?.overallVolumeUtilization ?? plan.volumeUtilization ?? 0;
+                const wtUtil = plan.utilization?.overallWeightUtilization ?? plan.weightUtilization ?? 0;
+                const truckDims = truck.dimensions || { length: 13.6, width: 2.45, height: 2.8 };
+                const currentFleetVMode = fleetViewMode[vid] || '2D';
+                const cargoFor2D = assignments.map(a => {
+                  const aDims = resolveAuthoritativeDimensions(a);
+                  const aPos = resolveAuthoritativePosition(a);
+                  return { ...a, dx: aDims.dx, dy: aDims.dy, dz: aDims.dz,
+                    length: aDims.dx, width: aDims.dy, height: aDims.dz,
+                    x: aPos.x, y: aPos.y, z: aPos.z, position: aPos,
+                    dimensions: { dx: aDims.dx, dy: aDims.dy, dz: aDims.dz } };
+                });
+
+                return (
+                  <div key={vid} className="bg-white rounded-2xl border border-gray-200 shadow-xs overflow-hidden">
+                    <button id={`fleet-truck-card-${vid}`} type="button"
+                      className="w-full px-5 py-4 flex items-center justify-between text-left hover:bg-gray-50 transition cursor-pointer"
+                      onClick={() => setExpandedTruckId(isExpanded ? null : vid)}>
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-xl bg-violet-100 flex items-center justify-center">
+                          <Truck className="w-5 h-5 text-violet-600" />
+                        </div>
+                        <div>
+                          <div className="text-sm font-black text-gray-900">{vid}</div>
+                          <div className="text-xs text-gray-500">{truck.type || 'Truck'} · {truck.capacityVolume}m³ · {assignments.length} cargo item(s)</div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-4">
+                        <div className="hidden sm:flex items-center gap-3 text-xs text-gray-500">
+                          <span>Vol <span className="font-bold text-gray-800">{volUtil}%</span></span>
+                          <span>Wt <span className="font-bold text-gray-800">{wtUtil}%</span></span>
+                        </div>
+                        {isExpanded ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
+                      </div>
+                    </button>
+                    {isExpanded && (
+                      <div className="border-t border-gray-100 p-5 space-y-4">
+                        <div className="flex items-center justify-between">
+                          <h4 className="text-xs font-black text-gray-700">Load Visualization — {vid}</h4>
+                          <div className="flex items-center bg-gray-100 rounded-lg p-0.5 border border-gray-200">
+                            {['2D','3D'].map(m => (
+                              <button key={m} id={`fleet-view-${vid}-${m}`} type="button"
+                                onClick={() => setFleetViewMode(prev => ({ ...prev, [vid]: m }))}
+                                className={`px-2.5 py-1 rounded-md text-xs font-bold transition cursor-pointer ${
+                                  currentFleetVMode === m ? 'bg-white text-violet-700 shadow border border-gray-200' : 'text-gray-500 hover:text-gray-700'
+                                }`}>{m}</button>
+                            ))}
+                          </div>
+                        </div>
+                        {cargoFor2D.length === 0 ? (
+                          <div className="flex items-center justify-center h-32 bg-gray-50 rounded-xl border border-dashed border-gray-200">
+                            <p className="text-xs text-gray-400">No cargo assigned to this truck.</p>
+                          </div>
+                        ) : currentFleetVMode === '2D' ? (
+                          <div className="rounded-xl overflow-hidden border border-gray-200 bg-gray-50">
+                            <Trailer2DView truckDimensions={truckDims} cargo={cargoFor2D} currentStop="" />
+                          </div>
+                        ) : (
+                          <div className="rounded-xl overflow-hidden border border-gray-200 bg-gray-900">
+                            <OperationalLoadVisualizer
+                              truck={{ ...truck, dimensions: truckDims }}
+                              assignments={cargoFor2D}
+                              currentStop="" />
+                          </div>
+                        )}
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-xs">
+                            <thead><tr className="border-b border-gray-100 text-gray-500 font-bold">
+                              <th className="text-left py-2 pr-3">Shipment</th>
+                              <th className="text-left py-2 pr-3">Route Segment</th>
+                              <th className="text-right py-2 pr-3">Vol</th>
+                              <th className="text-right py-2 pr-3">Wt</th>
+                              <th className="text-left py-2">Position</th>
+                            </tr></thead>
+                            <tbody className="divide-y divide-gray-50">
+                              {assignments.map((a, ai) => {
+                                const aPos = resolveAuthoritativePosition(a);
+                                return (
+                                  <tr key={`${a.shipmentId}-${ai}`} className="text-gray-700">
+                                    <td className="py-1.5 pr-3 font-mono font-bold text-violet-700">{a.shipmentId}</td>
+                                    <td className="py-1.5 pr-3 text-gray-500">{a.segmentRange?.fromStop || a.pickup || '—'} → {a.segmentRange?.toStop || a.delivery || '—'}</td>
+                                    <td className="py-1.5 pr-3 text-right">{Number(a.volume||0).toFixed(1)}m³</td>
+                                    <td className="py-1.5 pr-3 text-right">{Math.round(a.weight||0)}kg</td>
+                                    <td className="py-1.5 font-mono text-gray-400 text-xs">({Number(aPos.x).toFixed(1)},{Number(aPos.y).toFixed(1)},{Number(aPos.z).toFixed(1)})</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                        {plan.tripId && (
+                          <div className="text-xs text-gray-400">
+                            Trip: <Link to={`/manager/trips/${plan.tripId}`} className="text-violet-600 font-bold hover:underline">{plan.tripId}</Link>
+                            {plan.loadPlanId && <> · <span className="font-mono">{plan.loadPlanId}</span></>}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {fleetResult.unassignedShipments?.length > 0 && (
+                <div className="bg-red-50 border border-red-100 rounded-2xl p-4">
+                  <h4 className="text-xs font-black text-red-700 flex items-center gap-1.5 mb-3">
+                    <AlertTriangle className="w-3.5 h-3.5" />Unassigned Cargo ({fleetResult.unassignedShipments.length})
+                  </h4>
+                  <table className="w-full text-xs">
+                    <thead><tr className="border-b border-red-100 text-red-500 font-bold">
+                      <th className="text-left py-2 pr-3">Shipment</th>
+                      <th className="text-right py-2 pr-3">Vol</th>
+                      <th className="text-right py-2 pr-3">Wt</th>
+                      <th className="text-left py-2">Reason</th>
+                    </tr></thead>
+                    <tbody className="divide-y divide-red-50">
+                      {fleetResult.unassignedShipments.map((u, ui) => (
+                        <tr key={u.shipmentId || ui} className="text-red-800">
+                          <td className="py-1.5 pr-3 font-mono font-bold">{u.shipmentId || '—'}</td>
+                          <td className="py-1.5 pr-3 text-right">{Number(u.volume||0).toFixed(1)}</td>
+                          <td className="py-1.5 pr-3 text-right">{Math.round(u.weight||0)}</td>
+                          <td className="py-1.5 text-red-600">{u.reason || 'Fleet capacity insufficient'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ─── SINGLE-TRUCK PANEL (existing, guarded) ────────────────────── */}
+      {activeMode === 'single' && (<div>
 
       {/* Loading Skeleton */}
       {loading && (
@@ -1188,7 +1601,7 @@ const ManagerOptimizationView = () => {
                     <div className="flex items-center justify-between text-[10px] font-mono text-slate-600 pt-1 border-t border-emerald-100">
                       <strong className="text-emerald-800">{c.volume} m³</strong>
                       <strong className="text-slate-800">{c.weight.toLocaleString()} kg</strong>
-                      <span>{c.dimensions?.length || 4}×{c.dimensions?.width || 2.4}×{c.dimensions?.height || 2.5}m</span>
+                      <span>{(c.length || c.dimensions?.length || 0)}×{(c.width || c.dimensions?.width || 0)}×{(c.height || c.dimensions?.height || 0)}m</span>
                     </div>
                   </div>
                 ))}
@@ -1214,7 +1627,11 @@ const ManagerOptimizationView = () => {
                 {lockedCargoList.map((pkg) => {
                   const pStop = pkg.pickupStop || pkg.pickup || pkg.loadStop || 'Chennai';
                   const dStop = pkg.deliveryStop || pkg.delivery || pkg.unloadStop || 'Bangalore';
-                  const dims = pkg.dimensions || { length: 4.0, width: 2.4, height: 2.5 };
+                  const dims = {
+                    length: pkg.length || pkg.dimensions?.length || pkg.dx || 0,
+                    width: pkg.width || pkg.dimensions?.width || pkg.dy || 0,
+                    height: pkg.height || pkg.dimensions?.height || pkg.dz || 0
+                  };
 
                   // Physical Status resolution
                   let physStatus = pkg.physicalStatus;
@@ -1271,7 +1688,7 @@ const ManagerOptimizationView = () => {
                         <div className="col-span-2 pt-1 border-t border-slate-100">
                           <span className="text-gray-400 block font-semibold uppercase">DIMENSIONS (L × W × H)</span>
                           <span className="font-mono text-slate-800 font-bold">
-                            {dims.length || 4}m × {dims.width || 2.4}m × {dims.height || 2.5}m
+                            {dims.length}m × {dims.width}m × {dims.height}m
                           </span>
                         </div>
                       </div>
@@ -1439,6 +1856,20 @@ const ManagerOptimizationView = () => {
             </div>
           )}
 
+          {/* Draft Preview Indicator Banner */}
+          {!isPlanLocked && optimizationResult && (
+            <div className="p-4 bg-amber-50 border border-amber-300 rounded-2xl flex items-center justify-between gap-3 text-xs text-amber-900 shadow-xs">
+              <div className="flex items-center gap-2">
+                <span className="px-2.5 py-0.5 rounded-full font-black text-[10px] bg-amber-200 text-amber-950 uppercase tracking-wide">
+                  Draft Preview
+                </span>
+                <span className="font-semibold">
+                  This optimization is an in-memory preview. Inspect the 3D Digital Twin and 2D CAD views below, then click <strong>"Approve &amp; Lock Load Plan"</strong> to commit to database.
+                </span>
+              </div>
+            </div>
+          )}
+
           {/* ── AUTHORITATIVE LOAD VISUALIZER (3D DIGITAL TWIN & 2D CAD SCHEMATIC) ── */}
           <div ref={visualizerSectionRef} className="space-y-4">
             <OperationalLoadVisualizer
@@ -1460,6 +1891,7 @@ const ManagerOptimizationView = () => {
               unassigned={optimizationResult?.unassignedShipments || []}
               stops={resolvedStops}
               currentStop={effectiveCurrentStop}
+              currentStopIndex={currentStopIdx}
               nextStop={resolvedStops[Math.min(resolvedStops.length - 1, currentStopIdx + 1)] || 'Kanchipuram'}
               loadPlanStatus={optimizationResult?.status || (isPlanLocked ? 'LOCKED' : 'OPTIMIZED')}
               isLocked={isPlanLocked}
@@ -1515,6 +1947,7 @@ const ManagerOptimizationView = () => {
           </div>
         </div>
       )}
+      </div>)}
     </div>
   );
 };

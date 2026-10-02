@@ -1,7 +1,7 @@
-import { ORIENTATIONS } from './constants.js';
+import { ORIENTATIONS, GEOMETRY_EPSILON } from './constants.js';
 import { validatePackageWithinTruck } from './validator.js';
 
-const EPSILON = 1e-7; // Exact 0.1 micrometer precision for boundary & collision detection
+const EPSILON = GEOMETRY_EPSILON;
 const norm = (s) => (s ? String(s).trim().toLowerCase() : '');
 
 /**
@@ -30,7 +30,7 @@ export class SpatialEngine {
     if (capVol > 0 && (len <= 0 || wid <= 0 || hgt <= 0)) {
       if (wid <= 0) wid = 2.45;
       if (hgt <= 0) hgt = 2.8;
-      len = parseFloat((capVol / (wid * hgt)).toFixed(3));
+      len = capVol / (wid * hgt);
     }
 
     // Standard authoritative defaults if still missing
@@ -231,11 +231,11 @@ export class SpatialEngine {
 
     if (len > 0 && wid > 0 && hgt > 0) {
       // Original orientation
-      if (len <= this.interiorLength && wid <= this.interiorWidth && hgt <= this.interiorHeight) {
+      if (len <= this.interiorLength + EPSILON && wid <= this.interiorWidth + EPSILON && hgt <= this.interiorHeight + EPSILON) {
         orientations.push({ name: ORIENTATIONS.ORIGINAL, dx: len, dy: wid, dz: hgt });
       }
       // Horizontal 90° rotation (X-Y plane rotation, keeping upright height)
-      if (allowRotation && wid <= this.interiorLength && len <= this.interiorWidth && hgt <= this.interiorHeight) {
+      if (allowRotation && wid <= this.interiorLength + EPSILON && len <= this.interiorWidth + EPSILON && hgt <= this.interiorHeight + EPSILON) {
         orientations.push({ name: ORIENTATIONS.ROTATED_90, dx: wid, dy: len, dz: hgt });
       }
     } else {
@@ -243,24 +243,24 @@ export class SpatialEngine {
       const vol = Math.max(0.1, Number(shipment.volume || 1));
       const fullW = this.interiorWidth;
       const fullH = this.interiorHeight;
-      const halfW = parseFloat((this.interiorWidth / 2).toFixed(2));
-      const halfH = parseFloat((this.interiorHeight / 2).toFixed(2));
+      const halfW = this.interiorWidth / 2;
+      const halfH = this.interiorHeight / 2;
 
       // Option A: Full cross-section
-      const lenA = parseFloat((vol / (fullW * fullH)).toFixed(3));
-      if (lenA <= this.interiorLength) {
+      const lenA = vol / (fullW * fullH);
+      if (lenA <= this.interiorLength + EPSILON) {
         orientations.push({ name: 'FULL_CROSS_SECTION', dx: lenA, dy: fullW, dz: fullH });
       }
 
       // Option B: Half-width, Full-height
-      const lenB = parseFloat((vol / (halfW * fullH)).toFixed(3));
-      if (lenB <= this.interiorLength) {
+      const lenB = vol / (halfW * fullH);
+      if (lenB <= this.interiorLength + EPSILON) {
         orientations.push({ name: 'HALF_WIDTH_FULL_HEIGHT', dx: lenB, dy: halfW, dz: fullH });
       }
 
       // Option C: Half-width, Half-height
-      const lenC = parseFloat((vol / (halfW * halfH)).toFixed(3));
-      if (lenC <= this.interiorLength) {
+      const lenC = vol / (halfW * halfH);
+      if (lenC <= this.interiorLength + EPSILON) {
         orientations.push({ name: 'HALF_WIDTH_HALF_HEIGHT', dx: lenC, dy: halfW, dz: halfH });
       }
     }
@@ -271,25 +271,25 @@ export class SpatialEngine {
 
     // Generate Candidate 3D Anchor Points (Extreme Points on Floor & Box Tops)
     const anchorPointsMap = new Map();
-    anchorPointsMap.set('0.000_0.000_0.000', { x: 0, y: 0, z: 0 });
+    anchorPointsMap.set('0.000000_0.000000_0.000000', { x: 0, y: 0, z: 0 });
 
     for (const pb of this.placedBoxes) {
       if (SpatialEngine.isSegmentConcurrent(shipment.segmentRange, pb.segmentRange)) {
         // Point next to box in X
         const ptX = { x: pb.position.x + pb.dims.dx, y: pb.position.y, z: pb.position.z };
-        if (ptX.x <= this.interiorLength) {
-          anchorPointsMap.set(`${ptX.x.toFixed(3)}_${ptX.y.toFixed(3)}_${ptX.z.toFixed(3)}`, ptX);
+        if (ptX.x <= this.interiorLength + EPSILON) {
+          anchorPointsMap.set(`${ptX.x.toFixed(6)}_${ptX.y.toFixed(6)}_${ptX.z.toFixed(6)}`, ptX);
         }
         // Point next to box in Y
         const ptY = { x: pb.position.x, y: pb.position.y + pb.dims.dy, z: pb.position.z };
-        if (ptY.y <= this.interiorWidth) {
-          anchorPointsMap.set(`${ptY.x.toFixed(3)}_${ptY.y.toFixed(3)}_${ptY.z.toFixed(3)}`, ptY);
+        if (ptY.y <= this.interiorWidth + EPSILON) {
+          anchorPointsMap.set(`${ptY.x.toFixed(6)}_${ptY.y.toFixed(6)}_${ptY.z.toFixed(6)}`, ptY);
         }
         // Point on top of box in Z (if stackable)
         if (pb.stackable !== false && pb.fragile !== true) {
           const ptZ = { x: pb.position.x, y: pb.position.y, z: pb.position.z + pb.dims.dz };
-          if (ptZ.z <= this.interiorHeight) {
-            anchorPointsMap.set(`${ptZ.x.toFixed(3)}_${ptZ.y.toFixed(3)}_${ptZ.z.toFixed(3)}`, ptZ);
+          if (ptZ.z <= this.interiorHeight + EPSILON) {
+            anchorPointsMap.set(`${ptZ.x.toFixed(6)}_${ptZ.y.toFixed(6)}_${ptZ.z.toFixed(6)}`, ptZ);
           }
         }
       }
@@ -344,14 +344,14 @@ export class SpatialEngine {
           bestScore = placementCost;
           bestCandidate = {
             position: {
-              x: parseFloat(candidateBox.x.toFixed(3)),
-              y: parseFloat(candidateBox.y.toFixed(3)),
-              z: parseFloat(candidateBox.z.toFixed(3))
+              x: candidateBox.x,
+              y: candidateBox.y,
+              z: candidateBox.z
             },
             dims: {
-              dx: parseFloat(ori.dx.toFixed(3)),
-              dy: parseFloat(ori.dy.toFixed(3)),
-              dz: parseFloat(ori.dz.toFixed(3))
+              dx: ori.dx,
+              dy: ori.dy,
+              dz: ori.dz
             },
             orientation: ori.name,
             obstructionScore,

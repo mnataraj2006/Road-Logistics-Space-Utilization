@@ -11,16 +11,39 @@ const inputCls = 'w-full bg-gray-50 border border-gray-200 px-4 py-3 rounded-xl 
 const StopScan = () => {
   const [searchParams] = useSearchParams();
   const [vehicleId, setVehicleId] = useState(searchParams.get('vehicleId') || '');
+  const [stopId, setStopId] = useState(searchParams.get('stopId') || '');
   const [qrToken, setQrToken] = useState(searchParams.get('qrToken') || '');
   
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
 
+  const handleTokenChange = (val) => {
+    setQrToken(val);
+    if (val.startsWith('STP-SEC.')) {
+      try {
+        const parts = val.split('.');
+        if (parts.length === 3) {
+          let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+          while (b64.length % 4) b64 += '=';
+          const payload = JSON.parse(atob(b64));
+          if (payload.stopId && !stopId) {
+            setStopId(payload.stopId);
+          }
+          if (payload.vehicleId && !vehicleId) {
+            setVehicleId(payload.vehicleId);
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+  };
+
   const handleVerify = async (e) => {
     if (e) e.preventDefault();
-    if (!vehicleId.trim() || !qrToken.trim()) {
-      setError('Please enter both Truck ID and QR Verification Token.');
+    if (!vehicleId.trim() || !qrToken.trim() || !stopId.trim()) {
+      setError('Please enter Truck ID, Stop ID, and QR Verification Token.');
       return;
     }
 
@@ -31,7 +54,9 @@ const StopScan = () => {
     try {
       const { data } = await api.post('/transit/verify-stop', {
         vehicleId: vehicleId.trim(),
-        qrToken: qrToken.trim()
+        stopId: stopId.trim(),
+        qrToken: qrToken.trim(),
+        secureToken: qrToken.trim()
       });
       setResult(data);
     } catch (err) {
@@ -167,11 +192,23 @@ const StopScan = () => {
               </div>
 
               <div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block mb-1.5">Stop Identifier (stopId)</label>
+                <input
+                  type="text"
+                  value={stopId}
+                  onChange={(e) => setStopId(e.target.value)}
+                  placeholder="e.g. STP-2 or Salem"
+                  required
+                  className={inputCls}
+                />
+              </div>
+
+              <div>
                 <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block mb-1.5">Scanned Stop QR Token</label>
                 <input
                   type="text"
                   value={qrToken}
-                  onChange={(e) => setQrToken(e.target.value)}
+                  onChange={(e) => handleTokenChange(e.target.value)}
                   placeholder="e.g. STPTKN-a1b2c3d4..."
                   required
                   className={inputCls}

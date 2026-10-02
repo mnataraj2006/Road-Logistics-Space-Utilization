@@ -200,7 +200,47 @@ const shipmentSchema = new mongoose.Schema({
     default: 0
   }
 }, {
-  timestamps: true
+  timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
+});
+
+// Canonical dimensions mapping: enables both s.dimensions.length and s.length
+shipmentSchema.virtual('dimensions').get(function() {
+  return {
+    length: this.length || 0,
+    width: this.width || 0,
+    height: this.height || 0
+  };
+}).set(function(v) {
+  if (v) {
+    if (v.length !== undefined) this.length = v.length;
+    if (v.width !== undefined) this.width = v.width;
+    if (v.height !== undefined) this.height = v.height;
+    if (v.dx !== undefined) this.length = v.dx;
+    if (v.dy !== undefined) this.width = v.dy;
+    if (v.dz !== undefined) this.height = v.dz;
+  }
+});
+
+// Canonical date mapping
+shipmentSchema.virtual('date').get(function() {
+  return this.requestedDate;
+}).set(function(v) {
+  this.requestedDate = v;
+});
+
+// Canonical stop mappings for interoperability with Booking
+shipmentSchema.virtual('fromStop').get(function() {
+  return this.pickupStop;
+}).set(function(v) {
+  this.pickupStop = v;
+});
+
+shipmentSchema.virtual('toStop').get(function() {
+  return this.deliveryStop;
+}).set(function(v) {
+  this.deliveryStop = v;
 });
 
 shipmentSchema.index({ customer: 1, requestedDate: -1 });

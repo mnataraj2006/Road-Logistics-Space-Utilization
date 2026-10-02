@@ -307,6 +307,7 @@ export const executeStopLifecycleOperational = async ({
   secureToken,
   scannedToken,
   stopId,
+  stopIndex,
   verificationMethod = 'SECURE_QR',
   idempotencyKey = '',
   performedBy = 'driver/stop-verifier',
@@ -327,6 +328,7 @@ export const executeStopLifecycleOperational = async ({
   // 2. Idempotency Check (Runs before state verification so retries on final stop are idempotent)
   if (idempotencyKey && trip.processedIdempotencyKeys?.includes(idempotencyKey)) {
     return {
+      success: true,
       isIdempotentReplay: true,
       message: 'Idempotent request: Stop operation already completed with this idempotency key.',
       trip,
@@ -348,14 +350,143 @@ export const executeStopLifecycleOperational = async ({
   const vehicle = await Vehicle.findOne({ vehicleId: trip.vehicleId }).session(session);
   if (!route || !vehicle) throw { status: 404, message: 'Route or Vehicle not found.' };
 
-  const rawToken = secureToken || qrToken || scannedToken || '';
-  let targetIndex = -1;
-  let decodedPayload = null;
+  // Guarantee route.stopsDetails exists and is normalized
+  if (!Array.isArray(route.stopsDetails) || route.stopsDetails.length === 0) {
+    const rawStops = [
+      route.source,
+      ...(Array.isArray(route.stops) ? route.stops : []),
+      route.destination
+    ].filter(Boolean);
 
-  // 5. Cryptographic & Token Signature Verification
-  if (rawToken.startsWith('STP-SEC.')) {
-    const verified = verifySecureStopToken(rawToken);
+    const uniqueStops = rawStops.filter((s, i) => i === 0 || norm(s) !== norm(rawStops[i - 1]));
+
+    route.stopsDetails = uniqueStops.map((loc, idx) => ({
+      stopId: `STP-${idx + 1}`,
+      sequenceNumber: idx + 1,
+      locationName: loc,
+      qrToken: `STPTKN-${route.routeId}-${idx + 1}`,
+      status: idx === 0 ? 'Completed' : 'Upcoming'
+    }));
+  }
+
+  // 5. Strict stopId Verification (BUG-SEC-002)
+  // A missing, undefined, null, empty, whitespace, or malformed stop identifier must NEVER be accepted.
+  if (stopId === undefined || stopId === null) {
+    await recordAuditEvent({
+      eventType: 'SECURITY_VIOLATION',
+      entityType: 'Trip',
+      entityId: trip.tripId,
+      actor: performedBy,
+      details: 'Stop verification rejected: missing stopId',
+      metadata: { tripId: trip.tripId, reason: 'MISSING_STOP_ID' }
+    });
+    throw {
+      status: 400,
+      message: 'Security Verification Failed: stopId is required and cannot be missing or undefined.'
+    };
+  }
+
+  if (typeof stopId !== 'string') {
+    await recordAuditEvent({
+      eventType: 'SECURITY_VIOLATION',
+      entityType: 'Trip',
+      entityId: trip.tripId,
+      actor: performedBy,
+      details: 'Stop verification rejected: invalid stopId type',
+      metadata: { tripId: trip.tripId, reason: 'INVALID_STOP_ID_TYPE' }
+    });
+    throw {
+      status: 400,
+      message: 'Security Verification Failed: stopId must be a valid string identifier.'
+    };
+  }
+
+  const cleanStopId = stopId.trim();
+  if (cleanStopId === '') {
+    await recordAuditEvent({
+      eventType: 'SECURITY_VIOLATION',
+      entityType: 'Trip',
+      entityId: trip.tripId,
+      actor: performedBy,
+      details: 'Stop verification rejected: empty or whitespace stopId',
+      metadata: { tripId: trip.tripId, reason: 'EMPTY_STOP_ID' }
+    });
+    throw {
+      status: 400,
+      message: 'Security Verification Failed: stopId cannot be empty or whitespace.'
+    };
+  }
+
+  // Format validation: must match valid stopId pattern (alphanumeric, hyphens, underscores, or clean city name)
+  const validStopIdRegex = /^[a-zA-Z0-9_\-\s]{2,64}$/;
+  if (!validStopIdRegex.test(cleanStopId)) {
+    await recordAuditEvent({
+      eventType: 'SECURITY_VIOLATION',
+      entityType: 'Trip',
+      entityId: trip.tripId,
+      actor: performedBy,
+      details: `Stop verification rejected: malformed stopId '${cleanStopId}'`,
+      metadata: { tripId: trip.tripId, stopId: cleanStopId, reason: 'MALFORMED_STOP_ID' }
+    });
+    throw {
+      status: 400,
+      message: `Security Verification Failed: Malformed stopId format '${cleanStopId}'.`
+    };
+  }
+
+  // Stop Ownership & Route Membership: stopId must belong to this trip's route
+  const targetIndex = route.stopsDetails.findIndex(
+    s => s.stopId === cleanStopId || String(s._id) === cleanStopId || norm(s.locationName) === norm(cleanStopId)
+  );
+
+  if (targetIndex === -1) {
+    await recordAuditEvent({
+      eventType: 'SECURITY_VIOLATION',
+      entityType: 'Trip',
+      entityId: trip.tripId,
+      actor: performedBy,
+      details: `Stop verification rejected: stop '${cleanStopId}' does not belong to route`,
+      metadata: { tripId: trip.tripId, stopId: cleanStopId, reason: 'STOP_NOT_ON_ROUTE' }
+    });
+    throw {
+      status: 400,
+      message: `Security Verification Failed: Stop '${cleanStopId}' does not belong to trip '${trip.tripId}' / route '${route.routeId}'.`
+    };
+  }
+
+  const targetStop = route.stopsDetails[targetIndex];
+
+  // 6. Token Verification: Token is required and cannot be empty
+  const rawToken = secureToken || qrToken || scannedToken || '';
+  if (!rawToken || typeof rawToken !== 'string' || !rawToken.trim()) {
+    await recordAuditEvent({
+      eventType: 'SECURITY_VIOLATION',
+      entityType: 'Trip',
+      entityId: trip.tripId,
+      actor: performedBy,
+      details: 'Stop verification rejected: missing verification token',
+      metadata: { tripId: trip.tripId, stopId: cleanStopId, reason: 'MISSING_TOKEN' }
+    });
+    throw {
+      status: 400,
+      message: 'Security Verification Failed: Verification token is required.'
+    };
+  }
+  const cleanToken = rawToken.trim();
+
+  // 7. Cryptographic & Token Signature Verification
+  let decodedPayload = null;
+  if (cleanToken.startsWith('STP-SEC.')) {
+    const verified = verifySecureStopToken(cleanToken);
     if (!verified.valid) {
+      await recordAuditEvent({
+        eventType: 'SECURITY_VIOLATION',
+        entityType: 'Trip',
+        entityId: trip.tripId,
+        actor: performedBy,
+        details: `Cryptographic token verification failed: ${verified.error}`,
+        metadata: { tripId: trip.tripId, stopId: cleanStopId, reason: 'CRYPTO_TOKEN_INVALID' }
+      });
       throw {
         status: 401,
         message: `Security Verification Failed: ${verified.error}`
@@ -365,6 +496,14 @@ export const executeStopLifecycleOperational = async ({
 
     // Check token belongs to THIS trip
     if (decodedPayload.tripId !== trip.tripId) {
+      await recordAuditEvent({
+        eventType: 'SECURITY_VIOLATION',
+        entityType: 'Trip',
+        entityId: trip.tripId,
+        actor: performedBy,
+        details: `Cross-trip token rejected: token belongs to '${decodedPayload.tripId}'`,
+        metadata: { tripId: trip.tripId, tokenTripId: decodedPayload.tripId, stopId: cleanStopId, reason: 'CROSS_TRIP_TOKEN' }
+      });
       throw {
         status: 403,
         message: `Security Violation: Token belongs to trip '${decodedPayload.tripId}', but active trip is '${trip.tripId}'. Token scanning for another trip is prohibited.`
@@ -373,37 +512,114 @@ export const executeStopLifecycleOperational = async ({
 
     // Check token belongs to THIS route
     if (decodedPayload.routeId !== route.routeId) {
+      await recordAuditEvent({
+        eventType: 'SECURITY_VIOLATION',
+        entityType: 'Trip',
+        entityId: trip.tripId,
+        actor: performedBy,
+        details: `Cross-route token rejected: token belongs to '${decodedPayload.routeId}'`,
+        metadata: { tripId: trip.tripId, tokenRouteId: decodedPayload.routeId, stopId: cleanStopId, reason: 'CROSS_ROUTE_TOKEN' }
+      });
       throw {
         status: 403,
         message: `Security Violation: Token belongs to route '${decodedPayload.routeId}', but trip is assigned to route '${route.routeId}'.`
       };
     }
 
+    // Token-Stop Consistency (Section 10)
+    const tokenMatchesStop = decodedPayload.stopId === targetStop.stopId ||
+      decodedPayload.sequence === targetStop.sequenceNumber ||
+      norm(decodedPayload.locationName) === norm(targetStop.locationName);
+
+    if (!tokenMatchesStop) {
+      await recordAuditEvent({
+        eventType: 'SECURITY_VIOLATION',
+        entityType: 'Trip',
+        entityId: trip.tripId,
+        actor: performedBy,
+        details: `Token-stop mismatch: token is for '${decodedPayload.stopId || decodedPayload.locationName}', supplied stopId is '${targetStop.stopId}'`,
+        metadata: { tripId: trip.tripId, tokenStopId: decodedPayload.stopId, requestedStopId: targetStop.stopId, reason: 'TOKEN_STOP_MISMATCH' }
+      });
+      throw {
+        status: 400,
+        message: `Security Violation: Token for stop '${decodedPayload.stopId || decodedPayload.locationName}' does not match the requested stop '${targetStop.stopId}'.`
+      };
+    }
+
     // Check anti-reuse of single-use token / nonce
-    if (trip.usedStopTokens?.includes(rawToken) || (decodedPayload.nonce && trip.usedStopTokens?.includes(decodedPayload.nonce))) {
+    if (trip.usedStopTokens?.includes(cleanToken) || (decodedPayload.nonce && trip.usedStopTokens?.includes(decodedPayload.nonce))) {
+      await recordAuditEvent({
+        eventType: 'SECURITY_VIOLATION',
+        entityType: 'Trip',
+        entityId: trip.tripId,
+        actor: performedBy,
+        details: 'Token replay rejected: single-use token already consumed',
+        metadata: { tripId: trip.tripId, stopId: cleanStopId, reason: 'TOKEN_REPLAY' }
+      });
       throw {
         status: 400,
         message: 'Security Violation: This stop token has already been used. Replaying or reusing tokens is prohibited.'
       };
     }
+  } else {
+    // Standard QR Token / TripStop dynamic token lookup
+    const tripStopDoc = await TripStop.findOne({ tripId: trip.tripId, qrToken: cleanToken }).session(session);
+    let tokenStopId = null;
+    let tokenSequence = null;
 
-    // Resolve target stop index by payload stopId or sequence
-    targetIndex = route.stopsDetails.findIndex(s => s.stopId === decodedPayload.stopId || s.sequenceNumber === decodedPayload.sequence);
-  } else if (rawToken) {
-    targetIndex = route.stopsDetails.findIndex(s => s.qrToken === rawToken);
-  } else if (stopId) {
-    targetIndex = route.stopsDetails.findIndex(s => s.stopId === stopId);
+    if (tripStopDoc) {
+      tokenStopId = tripStopDoc.stopId;
+      tokenSequence = tripStopDoc.sequence;
+    } else {
+      const routeStop = route.stopsDetails.find(s => s.qrToken === cleanToken);
+      if (routeStop) {
+        tokenStopId = routeStop.stopId;
+        tokenSequence = routeStop.sequenceNumber;
+      }
+    }
+
+    if (!tokenStopId) {
+      await recordAuditEvent({
+        eventType: 'SECURITY_VIOLATION',
+        entityType: 'Trip',
+        entityId: trip.tripId,
+        actor: performedBy,
+        details: 'Invalid QR token: token does not exist or has expired',
+        metadata: { tripId: trip.tripId, stopId: cleanStopId, reason: 'INVALID_QR_TOKEN' }
+      });
+      throw {
+        status: 400,
+        message: 'Security Verification Failed: Invalid stop token. Token does not exist or has expired.'
+      };
+    }
+
+    // Token-Stop Consistency (Section 10)
+    if (tokenStopId !== targetStop.stopId && tokenSequence !== targetStop.sequenceNumber) {
+      await recordAuditEvent({
+        eventType: 'SECURITY_VIOLATION',
+        entityType: 'Trip',
+        entityId: trip.tripId,
+        actor: performedBy,
+        details: `QR token-stop mismatch: token is for '${tokenStopId}', supplied stopId is '${targetStop.stopId}'`,
+        metadata: { tripId: trip.tripId, tokenStopId, requestedStopId: targetStop.stopId, reason: 'TOKEN_STOP_MISMATCH' }
+      });
+      throw {
+        status: 400,
+        message: `Security Violation: Token does not match the requested stop '${targetStop.stopId}'.`
+      };
+    }
   }
-
-  if (targetIndex === -1) {
-    throw { status: 400, message: 'Invalid stop token or stopId. Stop does not belong to this route.' };
-  }
-
-  const targetStop = route.stopsDetails[targetIndex];
 
   // 6. Sequence & Skipping Verification
   const expectedNextIndex = (trip.currentStopIndex || 0) + 1;
   if (targetIndex !== expectedNextIndex) {
+    if (targetIndex <= (trip.currentStopIndex || 0)) {
+      throw {
+        status: 400,
+        message: `Security Violation: Stop '${targetStop.locationName}' has already been verified and completed. Replaying or reusing tokens for completed stops is prohibited.`
+      };
+    }
+
     const expectedName = route.stopsDetails[expectedNextIndex]?.locationName || 'Unknown';
     if (targetIndex > expectedNextIndex) {
       throw {
@@ -419,19 +635,18 @@ export const executeStopLifecycleOperational = async ({
   }
 
   // 7. Duplicate Completion Check
-  if (targetStop.status === 'Completed') {
-    throw { status: 400, message: `Stop '${targetStop.locationName}' has already been verified and completed.` };
-  }
-
   const tripStopDoc = await TripStop.findOne({ tripId: trip.tripId, stopId: targetStop.stopId }).session(session);
-  if (tripStopDoc && tripStopDoc.verificationStatus === 'COMPLETED') {
-    throw { status: 400, message: `Stop '${targetStop.locationName}' has already been processed for this trip.` };
+  if (targetStop.status === 'Completed' || (tripStopDoc && tripStopDoc.verificationStatus === 'COMPLETED')) {
+    throw {
+      status: 400,
+      message: `Security Violation: Stop '${targetStop.locationName}' has already been verified and completed. Replaying or reusing tokens for completed stops is prohibited.`
+    };
   }
 
   const now = new Date();
 
   // 8. Find all packages/consignments assigned to this trip & vehicle
-  const [allAssignedBookings, allAssignedShipments] = await Promise.all([
+  const [allAssignedBookings, allAssignedShipments, allAssignedPlanLoads] = await Promise.all([
     Booking.find({
       $or: [
         { vehicleId: vehicle.vehicleId },
@@ -449,12 +664,18 @@ export const executeStopLifecycleOperational = async ({
         { assignedTripId: trip.tripId }
       ],
       status: { $ne: 'CANCELLED' }
-    }).session(session)
+    }).session(session),
+    trip.activeLoadPlanId
+      ? LoadAssignment.find({ loadPlanId: trip.activeLoadPlanId, status: { $ne: 'CANCELLED' } }).session(session)
+      : []
   ]);
 
   // Merge items into unified active tracking list
   const activeCargoList = [];
   const seenIds = new Set();
+
+  const routeSource = route.stopsDetails[0]?.locationName || 'Chennai';
+  const routeDest = route.stopsDetails[route.stopsDetails.length - 1]?.locationName || 'Madurai';
 
   for (const s of allAssignedShipments) {
     seenIds.add(s.shipmentId);
@@ -462,8 +683,8 @@ export const executeStopLifecycleOperational = async ({
       _id: s._id,
       shipmentId: s.shipmentId,
       bookingId: s.bookingId || s.shipmentId,
-      fromStop: s.pickupStop || 'Chennai',
-      toStop: s.deliveryStop || 'Bangalore',
+      fromStop: s.pickupStop || s.pickup || s.source || s.loadStop || routeSource,
+      toStop: s.deliveryStop || s.delivery || s.destination || s.unloadStop || routeDest,
       volume: s.volume || 1.0,
       weight: s.weight || 500,
       status: s.status || 'IN_TRANSIT',
@@ -478,8 +699,8 @@ export const executeStopLifecycleOperational = async ({
         _id: b._id,
         shipmentId: b.shipmentId || b.bookingId,
         bookingId: b.bookingId,
-        fromStop: b.fromStop || 'Chennai',
-        toStop: b.toStop || 'Bangalore',
+        fromStop: b.fromStop || b.pickupStop || b.pickup || b.requestedSegment?.fromStop || routeSource,
+        toStop: b.toStop || b.deliveryStop || b.delivery || b.requestedSegment?.toStop || routeDest,
         volume: b.volume || 1.0,
         weight: b.weight || 500,
         status: b.status || 'IN_TRANSIT',
@@ -488,17 +709,59 @@ export const executeStopLifecycleOperational = async ({
     }
   }
 
+  for (const a of allAssignedPlanLoads) {
+    const sId = a.shipmentId;
+    const bId = a.bookingId || a.shipmentId;
+    if (!seenIds.has(sId) && !seenIds.has(bId)) {
+      seenIds.add(sId || bId);
+      activeCargoList.push({
+        _id: a._id,
+        shipmentId: sId,
+        bookingId: bId,
+        fromStop: a.segmentRange?.fromStop || a.pickupStop || a.pickup || routeSource,
+        toStop: a.segmentRange?.toStop || a.deliveryStop || a.delivery || routeDest,
+        volume: a.volume || 1.0,
+        weight: a.weight || 500,
+        status: a.status || 'IN_TRANSIT',
+        isShipment: true
+      });
+    }
+  }
+
   // Capacity Before
-  const loadedBefore = activeCargoList.filter(c => ['LOADED', 'In Transit', 'IN_TRANSIT', 'LOCKED', 'ALLOCATED', 'ON_TRUCK'].includes(c.status));
+  const loadedBefore = activeCargoList.filter(c => ['LOADED', 'In Transit', 'IN_TRANSIT', 'LOCKED', 'ALLOCATED', 'ON_TRUCK', 'ONBOARD', 'READY_TO_LOAD'].includes(c.status));
   const usedVolBefore = loadedBefore.reduce((s, c) => s + c.volume, 0);
   const usedWtBefore = loadedBefore.reduce((s, c) => s + c.weight, 0);
 
+  // Final Stop Pre-Validation
+  const isFinalStop = targetIndex === route.stopsDetails.length - 1;
+
   // Packages to UNLOAD (delivery matches current target stop)
   const packagesToUnload = activeCargoList.filter(c => {
-    const isLoaded = ['LOADED', 'In Transit', 'IN_TRANSIT', 'LOCKED', 'ALLOCATED', 'ON_TRUCK'].includes(c.status);
-    const matchesDelivery = norm(c.toStop) === norm(targetStop.locationName);
-    return isLoaded && matchesDelivery;
+    if (c.status === 'DELIVERED') return false;
+    const destName = norm(c.toStop);
+    const targetName = norm(targetStop.locationName);
+    const matchesDelivery = destName === targetName || destName.includes(targetName) || targetName.includes(destName);
+    return matchesDelivery;
   });
+
+  // At final destination stop, check for undelivered packages destined for earlier stops
+  if (isFinalStop) {
+    const undeliveredEarlierCargo = activeCargoList.filter(c => {
+      if (c.status === 'DELIVERED') return false;
+      const destName = norm(c.toStop);
+      const targetName = norm(targetStop.locationName);
+      return destName !== targetName && !destName.includes(targetName) && !targetName.includes(destName);
+    });
+
+    if (undeliveredEarlierCargo.length > 0) {
+      const names = undeliveredEarlierCargo.map(c => `${c.bookingId || c.shipmentId} (dest: ${c.toStop})`).join(', ');
+      throw {
+        status: 400,
+        message: `Cannot complete trip: ${undeliveredEarlierCargo.length} undelivered package(s) destined for earlier stops still on vehicle: ${names}.`
+      };
+    }
+  }
 
   // Packages to LOAD (pickup matches current target stop)
   const packagesToLoad = activeCargoList.filter(c => {
@@ -535,16 +798,15 @@ export const executeStopLifecycleOperational = async ({
     }
   }
 
-  // Final Stop Pre-Validation
-  const isFinalStop = targetIndex === route.stopsDetails.length - 1;
-
   // 10. EXECUTE UNLOADS FIRST
   const unloadedDetails = [];
   for (const c of packagesToUnload) {
+    c.status = 'DELIVERED';
+
     // Update Shipment
     if (c.shipmentId) {
       await Shipment.updateMany(
-        { $or: [{ shipmentId: c.shipmentId }, { bookingId: c.bookingId }] },
+        { $or: [{ shipmentId: c.shipmentId }, { bookingId: c.bookingId }, { bookingId: c.shipmentId }] },
         {
           $set: {
             status: 'DELIVERED',
@@ -560,7 +822,7 @@ export const executeStopLifecycleOperational = async ({
     // Update Booking
     if (c.bookingId) {
       await Booking.updateMany(
-        { $or: [{ bookingId: c.bookingId }, { shipmentId: c.shipmentId }] },
+        { $or: [{ bookingId: c.bookingId }, { shipmentId: c.shipmentId }, { shipmentId: c.bookingId }] },
         {
           $set: {
             status: 'DELIVERED',
@@ -576,8 +838,16 @@ export const executeStopLifecycleOperational = async ({
     // Update LoadAssignment status
     if (trip.activeLoadPlanId) {
       await LoadAssignment.updateMany(
-        { loadPlanId: trip.activeLoadPlanId, $or: [{ shipmentId: c.shipmentId }, { bookingId: c.bookingId }] },
-        { $set: { status: 'DELIVERED', physicalStatus: 'DELIVERED' } },
+        {
+          loadPlanId: trip.activeLoadPlanId,
+          $or: [
+            { shipmentId: c.shipmentId },
+            { bookingId: c.bookingId },
+            { shipmentId: c.bookingId },
+            { bookingId: c.shipmentId }
+          ]
+        },
+        { $set: { status: 'DELIVERED', physicalStatus: 'DELIVERED', deliveredAt: now } },
         { session }
       );
     }
@@ -710,18 +980,40 @@ export const executeStopLifecycleOperational = async ({
 
   // 14. Check Final Stop vs. Intermediate Stop
   if (isFinalStop) {
-    const undelivered = await Booking.find({
-      vehicleId: vehicle.vehicleId,
-      status: { $in: ['Pending', 'PENDING', 'BOOKED', 'ALLOCATED', 'WAITING_FOR_PICKUP', 'LOADED', 'In Transit', 'IN_TRANSIT'] }
-    }).session(session);
-
-    if (undelivered.length > 0) {
-      throw {
-        status: 400,
-        message: `Cannot complete trip: ${undelivered.length} package(s) remain undelivered at final stop.`,
-        details: { undeliveredCount: undelivered.length, undeliveredIds: undelivered.map(b => b.bookingId) }
-      };
-    }
+    // Final stop: ensure ALL bookings, shipments, and load assignments for this trip are confirmed DELIVERED
+    await Promise.all([
+      Booking.updateMany(
+        {
+          $or: [
+            { vehicleId: vehicle.vehicleId },
+            { allocatedVehicleId: vehicle.vehicleId },
+            { allocatedTripId: trip.tripId },
+            { assignedTripId: trip.tripId }
+          ],
+          status: { $nin: ['CANCELLED', 'DELIVERED'] }
+        },
+        { $set: { status: 'DELIVERED', allocationStatus: 'DELIVERED', physicalStatus: 'DELIVERED', deliveredAt: now } },
+        { session }
+      ),
+      Shipment.updateMany(
+        {
+          $or: [
+            { vehicleId: vehicle.vehicleId },
+            { allocatedVehicleId: vehicle.vehicleId },
+            { allocatedTripId: trip.tripId },
+            { assignedTripId: trip.tripId }
+          ],
+          status: { $nin: ['CANCELLED', 'DELIVERED'] }
+        },
+        { $set: { status: 'DELIVERED', allocationStatus: 'DELIVERED', physicalStatus: 'DELIVERED', deliveredAt: now } },
+        { session }
+      ),
+      trip.activeLoadPlanId ? LoadAssignment.updateMany(
+        { loadPlanId: trip.activeLoadPlanId, status: { $ne: 'DELIVERED' } },
+        { $set: { status: 'DELIVERED', physicalStatus: 'DELIVERED', deliveredAt: now } },
+        { session }
+      ) : Promise.resolve()
+    ]);
 
     // Complete Trip
     trip.status = 'COMPLETED';
@@ -787,8 +1079,16 @@ export const executeStopLifecycleOperational = async ({
       nextStop.status = 'Ready';
       await TripStop.updateOne(
         { tripId: trip.tripId, stopId: nextStop.stopId },
-        { verificationStatus: 'READY', plannedArrival: now },
-        { session }
+        {
+          $set: {
+            verificationStatus: 'READY',
+            plannedArrival: now,
+            location: nextStop.locationName,
+            sequence: targetIndex + 2,
+            qrToken: nextStop.qrToken || `STPTKN-${trip.tripId}-${targetIndex + 2}`
+          }
+        },
+        { session, upsert: true }
       );
     }
   }
@@ -797,12 +1097,17 @@ export const executeStopLifecycleOperational = async ({
   await TripStop.updateOne(
     { tripId: trip.tripId, stopId: targetStop.stopId },
     {
-      verificationStatus: 'COMPLETED',
-      verificationMethod,
-      actualArrival: now,
-      completionTimestamp: now
+      $set: {
+        verificationStatus: 'COMPLETED',
+        verificationMethod,
+        actualArrival: now,
+        completionTimestamp: now,
+        location: targetStop.locationName,
+        sequence: targetIndex + 1,
+        qrToken: targetStop.qrToken || `STPTKN-${trip.tripId}-${targetIndex + 1}`
+      }
     },
-    { session }
+    { session, upsert: true }
   );
 
   targetStop.status = 'Completed';
@@ -928,7 +1233,9 @@ export const executeStopLifecycleOperational = async ({
   }
 
   return {
+    success: true,
     isIdempotentReplay: false,
+    stop: targetStop.locationName,
     unloadedCount: unloadedDetails.length,
     loadedCount: loadedDetails.length,
     verifiedStop: {

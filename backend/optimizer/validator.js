@@ -1,6 +1,108 @@
-import { PRIORITY_WEIGHTS } from './constants.js';
+import { PRIORITY_WEIGHTS, GEOMETRY_EPSILON } from './constants.js';
 
 const norm = (str) => (str ? String(str).trim().toLowerCase() : '');
+
+/**
+ * Authoritative Canonical Dimension Resolver.
+ * Strict resolution order:
+ * 1. Nested oriented dimensions (dimensions.dx, dimensions.dy, dimensions.dz) if finite and > 0
+ * 2. Top-level oriented dimensions (item.dx, item.dy, item.dz) if finite and > 0
+ * 3. Nested unoriented dimensions (dimensions.length, dimensions.width, dimensions.height) if finite and > 0
+ * 4. Top-level unoriented dimensions (item.length, item.width, item.height) if finite and > 0
+ */
+export const resolveAuthoritativeDimensions = (item = {}) => {
+  const isPos = (v) => v !== undefined && v !== null && Number.isFinite(Number(v)) && Number(v) > 0;
+
+  let dx = 0;
+  let dy = 0;
+  let dz = 0;
+
+  if (isPos(item.dimensions?.dx) && isPos(item.dimensions?.dy) && isPos(item.dimensions?.dz)) {
+    dx = Number(item.dimensions.dx);
+    dy = Number(item.dimensions.dy);
+    dz = Number(item.dimensions.dz);
+  } else if (isPos(item.dx) && isPos(item.dy) && isPos(item.dz)) {
+    dx = Number(item.dx);
+    dy = Number(item.dy);
+    dz = Number(item.dz);
+  } else if (isPos(item.dimensions?.length) && isPos(item.dimensions?.width) && isPos(item.dimensions?.height)) {
+    dx = Number(item.dimensions.length);
+    dy = Number(item.dimensions.width);
+    dz = Number(item.dimensions.height);
+  } else if (isPos(item.length) && isPos(item.width) && isPos(item.height)) {
+    dx = Number(item.length);
+    dy = Number(item.width);
+    dz = Number(item.height);
+  }
+
+  return { dx, dy, dz };
+};
+
+/**
+ * Authoritative Canonical Position Resolver.
+ * x = distance from FRONT CABIN toward REAR DOORS (0 = cabin, truckLength = rear doors)
+ * y = distance across truck width
+ * z = distance from FLOOR upward
+ */
+export const resolveAuthoritativePosition = (item = {}) => {
+  const isNum = (v) => v !== undefined && v !== null && Number.isFinite(Number(v));
+
+  const x = isNum(item.position?.x) ? Number(item.position.x) : isNum(item.x) ? Number(item.x) : 0;
+  const y = isNum(item.position?.y) ? Number(item.position.y) : isNum(item.y) ? Number(item.y) : 0;
+  const z = isNum(item.position?.z) ? Number(item.position.z) : isNum(item.z) ? Number(item.z) : 0;
+
+  return { x, y, z };
+};
+
+/**
+ * Authoritative Canonical Truck Dimension Resolver.
+ * Enforces positive, finite numerical checks:
+ * - If dimension > 0 and finite: use dimension
+ * - Else if interior dimension > 0 and finite: use interior dimension
+ * - Else: use authoritative fallback dimension (13.6 x 2.45 x 2.8)
+ */
+export const resolveAuthoritativeTruckDimensions = (truckDimensions = {}, fallback = { length: 13.6, width: 2.45, height: 2.8, capacityVolume: 93.3, capacityWeight: 20000 }) => {
+  const isPos = (v) => v !== undefined && v !== null && Number.isFinite(Number(v)) && Number(v) > 0;
+
+  const raw = truckDimensions?.dimensions || truckDimensions || {};
+  const length = isPos(raw.length)
+    ? Number(raw.length)
+    : isPos(truckDimensions?.interiorLength)
+    ? Number(truckDimensions.interiorLength)
+    : isPos(fallback?.length)
+    ? Number(fallback.length)
+    : 13.6;
+
+  const width = isPos(raw.width)
+    ? Number(raw.width)
+    : isPos(truckDimensions?.interiorWidth)
+    ? Number(truckDimensions.interiorWidth)
+    : isPos(fallback?.width)
+    ? Number(fallback.width)
+    : 2.45;
+
+  const height = isPos(raw.height)
+    ? Number(raw.height)
+    : isPos(truckDimensions?.interiorHeight)
+    ? Number(truckDimensions.interiorHeight)
+    : isPos(fallback?.height)
+    ? Number(fallback.height)
+    : 2.8;
+
+  const capacityVolume = isPos(truckDimensions?.capacityVolume)
+    ? Number(truckDimensions.capacityVolume)
+    : isPos(fallback?.capacityVolume)
+    ? Number(fallback.capacityVolume)
+    : length * width * height;
+
+  const capacityWeight = isPos(truckDimensions?.capacityWeight)
+    ? Number(truckDimensions.capacityWeight)
+    : isPos(fallback?.capacityWeight)
+    ? Number(fallback.capacityWeight)
+    : 20000;
+
+  return { length, width, height, capacityVolume, capacityWeight };
+};
 
 /**
  * Authoritative 3D Physical Geometry & Boundary Validator.
@@ -13,30 +115,35 @@ const norm = (str) => (str ? String(str).trim().toLowerCase() : '');
  * Uses oriented dimensions (dx, dy, dz) and checks full bounding box.
  *
  * @param {Object} params
- * @param {Object} params.position - { x, y, z }
- * @param {Object} params.dimensions - { dx, dy, dz } or { length, width, height }
- * @param {Object} params.truckDimensions - { length, width, height }
+ * @param {Object} [params.item] - Full package assignment object
+ * @param {Object} [params.position] - { x, y, z }
+ * @param {Object} [params.dimensions] - { dx, dy, dz } or { length, width, height }
+ * @param {Object} [params.truckDimensions] - { length, width, height }
  * @param {number} [params.tolerance=0.0001] - Strict numerical tolerance in meters
  * @returns {Object} Structured validation result
  */
 export const validatePackageWithinTruck = ({
+  item,
   position = {},
   dimensions = {},
   truckDimensions = {},
-  tolerance = 0.0001
+  tolerance = GEOMETRY_EPSILON
 } = {}) => {
-  const x = Number(position?.x ?? 0);
-  const y = Number(position?.y ?? 0);
-  const z = Number(position?.z ?? 0);
+  const resolvedPos = item ? resolveAuthoritativePosition(item) : resolveAuthoritativePosition({ position });
+  const resolvedDims = item ? resolveAuthoritativeDimensions(item) : resolveAuthoritativeDimensions({ dimensions });
 
-  // Oriented dimensions (dx, dy, dz) take precedence over unoriented (length, width, height)
-  const dx = Number(dimensions?.dx ?? dimensions?.length ?? 0);
-  const dy = Number(dimensions?.dy ?? dimensions?.width ?? 0);
-  const dz = Number(dimensions?.dz ?? dimensions?.height ?? 0);
+  const x = resolvedPos.x;
+  const y = resolvedPos.y;
+  const z = resolvedPos.z;
 
-  const truckL = Number(truckDimensions?.length ?? truckDimensions?.interiorLength ?? 13.6);
-  const truckW = Number(truckDimensions?.width ?? truckDimensions?.interiorWidth ?? 2.45);
-  const truckH = Number(truckDimensions?.height ?? truckDimensions?.interiorHeight ?? 2.8);
+  const dx = resolvedDims.dx;
+  const dy = resolvedDims.dy;
+  const dz = resolvedDims.dz;
+
+  const authTruck = resolveAuthoritativeTruckDimensions(truckDimensions);
+  const truckL = authTruck.length;
+  const truckW = authTruck.width;
+  const truckH = authTruck.height;
 
   const violations = [];
 
@@ -184,12 +291,12 @@ export const normalizeAndValidateInput = (input) => {
   const truckWidth = parseFloat(truck.dimensions?.width || truck.width || 2.45);
   const truckHeight = parseFloat(truck.dimensions?.height || truck.height || 2.8);
 
-  const calculatedTruckVol = parseFloat((rawLength * truckWidth * truckHeight).toFixed(3));
+  const calculatedTruckVol = rawLength * truckWidth * truckHeight;
   const rawCapVol = parseFloat(truck.capacityVolume || calculatedTruckVol);
   const authoritativeCapVol = Math.abs(rawCapVol - 93.296) < 0.01 ? 93.296 : rawCapVol;
 
   // Reconcile physical length if declared capacity volume exceeds bounding box volume
-  const minLengthForVol = parseFloat((authoritativeCapVol / (truckWidth * truckHeight)).toFixed(3));
+  const minLengthForVol = authoritativeCapVol / (truckWidth * truckHeight);
   const truckLength = authoritativeCapVol > calculatedTruckVol + 0.01 ? minLengthForVol : rawLength;
 
   const truckDimensions = {

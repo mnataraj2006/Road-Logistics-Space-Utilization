@@ -271,7 +271,7 @@ export const dispatchTruck = async (req, res) => {
  * @route POST /api/transit/verify-stop
  */
 export const verifyStop = async (req, res) => {
-  const { vehicleId, qrToken, secureToken, stopId, tripId, verificationMethod } = req.body;
+  const { vehicleId, qrToken, secureToken, stopId, stopIndex, tripId, verificationMethod } = req.body;
   const idempotencyKey = req.headers['x-idempotency-key'] || req.body.idempotencyKey || '';
 
   const tokenToUse = secureToken || qrToken || '';
@@ -282,10 +282,16 @@ export const verifyStop = async (req, res) => {
       message: 'Either vehicleId or tripId is required for verification.'
     });
   }
-  if (!tokenToUse && !stopId) {
+  if (!stopId || typeof stopId !== 'string' || !stopId.trim()) {
     return res.status(400).json({
       success: false,
-      message: 'A secureToken, qrToken, or stopId is required for stop verification.'
+      message: 'Security Verification Failed: stopId is required and cannot be empty or whitespace.'
+    });
+  }
+  if (!tokenToUse || typeof tokenToUse !== 'string' || !tokenToUse.trim()) {
+    return res.status(400).json({
+      success: false,
+      message: 'Security Verification Failed: A secureToken or qrToken is required for stop verification.'
     });
   }
 
@@ -297,6 +303,7 @@ export const verifyStop = async (req, res) => {
         qrToken: tokenToUse,
         secureToken: tokenToUse,
         stopId,
+        stopIndex,
         verificationMethod: verificationMethod || (tokenToUse.startsWith('STP-SEC.') ? 'SECURE_QR' : 'QR'),
         idempotencyKey,
         performedBy: req.user?.username || 'verifier',
@@ -319,6 +326,7 @@ export const verifyStop = async (req, res) => {
       message: 'STOP VERIFIED',
       tripId: result.trip.tripId,
       vehicleId: result.vehicle.vehicleId,
+      stop: result.verifiedStop?.locationName,
       verifiedStop: result.verifiedStop,
       arrivalTime: result.arrivalTime,
       verificationMethod: result.verificationMethod,

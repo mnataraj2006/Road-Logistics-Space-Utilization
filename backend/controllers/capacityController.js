@@ -102,6 +102,8 @@ export const bookCapacity = async (req, res) => {
 
     res.status(201).json({
       success: true,
+      bookingId: result.booking.bookingId,
+      shipmentId: result.shipment.shipmentId,
       message: `Capacity successfully reserved on truck ${result.vehicle.vehicleId}!`,
       booking: result.booking,
       shipment: result.shipment,

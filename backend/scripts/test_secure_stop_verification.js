@@ -21,6 +21,7 @@ import {
   executeStopLifecycleOperational
 } from '../services/tripLifecycleService.js';
 import { generateSecureStopToken } from '../services/secureTokenService.js';
+import { connectTestDB, safeDeleteMany } from '../config/testDbGuard.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,9 +30,8 @@ dotenv.config({ path: path.join(__dirname, '../.env') });
 
 const runSecureStopVerificationTestSuite = async () => {
   try {
-    const mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/road_logistics';
-    console.log('Connecting to MongoDB...', mongoUri);
-    await mongoose.connect(mongoUri);
+    const { dbName } = await connectTestDB();
+    console.log(`[TEST-GUARD] Connected to verified test database: ${dbName}`);
 
     console.log('\n===============================================================');
     console.log('STARTING SECURE STOP VERIFICATION & MALICIOUS ATTACK TEST SUITE');
@@ -42,19 +42,24 @@ const runSecureStopVerificationTestSuite = async () => {
     const vehicleId = 'TRK-SEC-1';
     const shipperUsername = 'shipper-sec';
 
-    // Cleanup
-    await Trip.deleteMany({ vehicleId });
-    await TripStop.deleteMany({});
-    await Vehicle.deleteMany({ vehicleId });
-    await Route.deleteMany({ routeId: { $in: [routeId, otherRouteId] } });
-    await Shipment.deleteMany({ shipperId: shipperUsername });
-    await Booking.deleteMany({ shipperId: shipperUsername });
-    await LoadPlan.deleteMany({ vehicleId });
-    await LoadAssignment.deleteMany({});
-    await LoadOperation.deleteMany({});
-    await StopVerification.deleteMany({ vehicleId });
-    await Payment.deleteMany({});
-    await User.deleteMany({ username: { $in: [shipperUsername, 'manager-sec'] } });
+    // Scoped safe cleanup
+    const existingTrips = await Trip.find({ vehicleId }, 'tripId');
+    const tripIds = existingTrips.map(t => t.tripId);
+    const existingPlans = await LoadPlan.find({ vehicleId }, '_id');
+    const planIds = existingPlans.map(p => p._id);
+
+    await safeDeleteMany(Trip, { vehicleId });
+    await safeDeleteMany(TripStop, { $or: [{ tripId: { $in: tripIds } }, { stopId: { $regex: /^STP-SEC-/ } }] });
+    await safeDeleteMany(Vehicle, { vehicleId });
+    await safeDeleteMany(Route, { routeId: { $in: [routeId, otherRouteId] } });
+    await safeDeleteMany(Shipment, { shipperId: shipperUsername });
+    await safeDeleteMany(Booking, { shipperId: shipperUsername });
+    await safeDeleteMany(LoadPlan, { vehicleId });
+    await safeDeleteMany(LoadAssignment, { $or: [{ loadPlan: { $in: planIds } }, { loadPlanId: { $regex: /^LP-/ } }] });
+    await safeDeleteMany(LoadOperation, { tripId: { $in: tripIds } });
+    await safeDeleteMany(StopVerification, { vehicleId });
+    await safeDeleteMany(Payment, { shipperId: shipperUsername });
+    await safeDeleteMany(User, { username: { $in: [shipperUsername, 'manager-sec'] } });
 
     const managerUser = await User.create({
       username: 'manager-sec',
@@ -222,7 +227,7 @@ const runSecureStopVerificationTestSuite = async () => {
     console.log('\n[SCENARIO 1] Testing Forged / Tampered Cryptographic Token...');
     const tamperedToken = validTokenStop2.substring(0, validTokenStop2.length - 4) + 'XXXX';
     try {
-      await executeStopLifecycleOperational({ tripId, vehicleId, secureToken: tamperedToken });
+      await executeStopLifecycleOperational({ tripId, vehicleId, stopId: 'STP-SEC-2', secureToken: tamperedToken });
       throw new Error('Scenario 1 Failed: Forged token was accepted!');
     } catch (err) {
       if (err.status !== 401 || !err.message.includes('signature mismatch')) throw err;
@@ -241,7 +246,7 @@ const runSecureStopVerificationTestSuite = async () => {
       validityHours: -5 // Expired 5 hours ago
     });
     try {
-      await executeStopLifecycleOperational({ tripId, vehicleId, secureToken: expiredToken });
+      await executeStopLifecycleOperational({ tripId, vehicleId, stopId: 'STP-SEC-2', secureToken: expiredToken });
       throw new Error('Scenario 2 Failed: Expired token was accepted!');
     } catch (err) {
       if (err.status !== 401 || !err.message.includes('expired')) throw err;
@@ -259,7 +264,7 @@ const runSecureStopVerificationTestSuite = async () => {
       locationName: 'Salem'
     });
     try {
-      await executeStopLifecycleOperational({ tripId, vehicleId, secureToken: otherTripToken });
+      await executeStopLifecycleOperational({ tripId, vehicleId, stopId: 'STP-SEC-2', secureToken: otherTripToken });
       throw new Error('Scenario 3 Failed: Cross-trip token was accepted!');
     } catch (err) {
       if (err.status !== 403 || !err.message.includes('Token belongs to trip')) throw err;
@@ -277,7 +282,7 @@ const runSecureStopVerificationTestSuite = async () => {
       locationName: 'Anantapur'
     });
     try {
-      await executeStopLifecycleOperational({ tripId, vehicleId, secureToken: otherRouteToken });
+      await executeStopLifecycleOperational({ tripId, vehicleId, stopId: 'STP-SEC-2', secureToken: otherRouteToken });
       throw new Error('Scenario 4 Failed: Cross-route token was accepted!');
     } catch (err) {
       if (err.status !== 403 || !err.message.includes('Token belongs to route')) throw err;
@@ -287,7 +292,7 @@ const runSecureStopVerificationTestSuite = async () => {
     // ── SCENARIO 5: OUT-OF-ORDER FUTURE STOP SCAN ─────────────────
     console.log('\n[SCENARIO 5] Testing Future Out-of-Order Stop Token (Scanning Stop 3 before Stop 2)...');
     try {
-      await executeStopLifecycleOperational({ tripId, vehicleId, secureToken: validTokenStop3 });
+      await executeStopLifecycleOperational({ tripId, vehicleId, stopId: 'STP-SEC-3', secureToken: validTokenStop3 });
       throw new Error('Scenario 5 Failed: Future stop token was accepted out-of-order!');
     } catch (err) {
       if (err.status !== 400 || !err.message.includes('Cannot skip stops')) throw err;
@@ -299,6 +304,7 @@ const runSecureStopVerificationTestSuite = async () => {
     const stop2Result = await executeStopLifecycleOperational({
       tripId,
       vehicleId,
+      stopId: 'STP-SEC-2',
       secureToken: validTokenStop2,
       verificationMethod: 'SECURE_QR',
       idempotencyKey: 'IDEM-SEC-SLM',
@@ -326,6 +332,7 @@ const runSecureStopVerificationTestSuite = async () => {
       await executeStopLifecycleOperational({
         tripId,
         vehicleId,
+        stopId: 'STP-SEC-2',
         secureToken: validTokenStop2,
         idempotencyKey: 'NEW-DIFFERENT-KEY-REPLAY'
       });
@@ -340,6 +347,7 @@ const runSecureStopVerificationTestSuite = async () => {
     const idemReplay = await executeStopLifecycleOperational({
       tripId,
       vehicleId,
+      stopId: 'STP-SEC-2',
       secureToken: validTokenStop2,
       idempotencyKey: 'IDEM-SEC-SLM'
     });
@@ -353,6 +361,7 @@ const runSecureStopVerificationTestSuite = async () => {
     const stop3Res = await executeStopLifecycleOperational({
       tripId,
       vehicleId,
+      stopId: 'STP-SEC-3',
       secureToken: validTokenStop3,
       verificationMethod: 'SECURE_QR',
       idempotencyKey: 'IDEM-SEC-CBE',
@@ -364,6 +373,7 @@ const runSecureStopVerificationTestSuite = async () => {
     const stop4Res = await executeStopLifecycleOperational({
       tripId,
       vehicleId,
+      stopId: 'STP-SEC-4',
       secureToken: validTokenStop4,
       verificationMethod: 'SECURE_QR',
       idempotencyKey: 'IDEM-SEC-MDU',
@@ -387,23 +397,24 @@ const runSecureStopVerificationTestSuite = async () => {
     }
     console.log(`✅ SCENARIO 10 PASSED: All ${verifications.length} stop operations recorded with method 'SECURE_QR' and timestamps.`);
 
-    // Cleanup
-    await Trip.deleteMany({ vehicleId });
-    await TripStop.deleteMany({});
-    await Vehicle.deleteMany({ vehicleId });
-    await Route.deleteMany({ routeId: { $in: [routeId, otherRouteId] } });
-    await Shipment.deleteMany({ shipperId: shipperUsername });
-    await Booking.deleteMany({ shipperId: shipperUsername });
-    await LoadPlan.deleteMany({ vehicleId });
-    await LoadAssignment.deleteMany({});
-    await LoadOperation.deleteMany({});
-    await StopVerification.deleteMany({ vehicleId });
-    await Payment.deleteMany({});
-    await User.deleteMany({ username: { $in: [shipperUsername, 'manager-sec'] } });
+    // Scoped safe cleanup
+    await safeDeleteMany(Trip, { vehicleId });
+    await safeDeleteMany(TripStop, { tripId });
+    await safeDeleteMany(Vehicle, { vehicleId });
+    await safeDeleteMany(Route, { routeId: { $in: [routeId, otherRouteId] } });
+    await safeDeleteMany(Shipment, { shipperId: shipperUsername });
+    await safeDeleteMany(Booking, { shipperId: shipperUsername });
+    await safeDeleteMany(LoadPlan, { vehicleId });
+    await safeDeleteMany(LoadAssignment, { loadPlanId: `LP-${tripId}-v1` });
+    await safeDeleteMany(LoadOperation, { tripId });
+    await safeDeleteMany(StopVerification, { vehicleId });
+    await safeDeleteMany(Payment, { shipperId: shipperUsername });
+    await safeDeleteMany(User, { username: { $in: [shipperUsername, 'manager-sec'] } });
 
     console.log('\n===============================================================');
     console.log('🎉 ALL 10 SECURE STOP VERIFICATION & SECURITY TESTS PASSED (100%)');
     console.log('===============================================================');
+    await mongoose.disconnect();
     process.exit(0);
   } catch (error) {
     console.error('\n❌ Secure Stop Verification Test Suite Failed:', error);

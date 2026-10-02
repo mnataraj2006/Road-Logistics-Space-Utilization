@@ -33,7 +33,9 @@ import {
   normalizeCanonicalPlacements,
   getActiveSegmentCargo,
   validateAuthoritativePlacements,
-  validatePackageWithinTruck
+  validatePackageWithinTruck,
+  getCanonicalRenderableAssignments,
+  resolveAuthoritativeTruckDimensions
 } from './canonicalPlacement';
 import Trailer2DView from './Trailer2DView';
 
@@ -58,24 +60,36 @@ const OperationalLoadVisualizer = ({
   tripId = 'TRIP-EXP-01',
   vehicleId = 'TN-01',
   routeId = 'CHN-BLR-EXP',
+  route,
   truckSpecs,
   truckDimensions,
   truckCapacity,
   assignments = [],
   unassigned = [],
-  stops = ['Chennai', 'Kanchipuram', 'Vellore', 'Hosur', 'Bangalore'],
+  stops,
   currentStop = 'Chennai',
-  nextStop = 'Kanchipuram',
+  nextStop = '',
   currentStopIndex = 0,
   loadPlanStatus = 'OPTIMIZED',
   isLocked = false,
   optimizationResult
 }) => {
   const [viewMode, setViewMode] = useState('3D'); // '3D' | '2D'
-  const [selectedSegment, setSelectedSegment] = useState(0); // 0 = First hop (e.g. Chennai -> Kanchipuram), or 'ALL'
+  const [selectedSegment, setSelectedSegment] = useState(() => {
+    if (typeof currentStopIndex === 'number' && currentStopIndex >= 0) {
+      return currentStopIndex;
+    }
+    return 0;
+  });
   const [selectedItem, setSelectedItem] = useState(null);
   const [hoveredItem, setHoveredItem] = useState(null);
   const [mouseScreenPos, setMouseScreenPos] = useState({ x: 0, y: 0 });
+
+  useEffect(() => {
+    if (typeof currentStopIndex === 'number' && currentStopIndex >= 0) {
+      setSelectedSegment(currentStopIndex);
+    }
+  }, [currentStopIndex]);
 
   // Feature Toggles
   const [showDimensions, setShowDimensions] = useState(true);
@@ -99,38 +113,58 @@ const OperationalLoadVisualizer = ({
   });
 
   // ── 1. Authoritative Truck Dimensions Resolution ──
-  const rawDims = truckSpecs?.dimensions || truckDimensions || {};
-  const truckLength = Number(rawDims.length || truckSpecs?.interiorLength || AUTHORITATIVE_TRUCK.length);
-  const truckWidth = Number(rawDims.width || truckSpecs?.interiorWidth || AUTHORITATIVE_TRUCK.width);
-  const truckHeight = Number(rawDims.height || truckSpecs?.interiorHeight || AUTHORITATIVE_TRUCK.height);
+  const authTruck = useMemo(() => {
+    return resolveAuthoritativeTruckDimensions(truckSpecs?.dimensions || truckDimensions || truckSpecs, AUTHORITATIVE_TRUCK);
+  }, [truckSpecs, truckDimensions]);
+
+  const truckLength = authTruck.length;
+  const truckWidth = authTruck.width;
+  const truckHeight = authTruck.height;
 
   const truckVolume = Number(
-    truckSpecs?.capacityVolume || truckCapacity?.volume || AUTHORITATIVE_TRUCK.capacityVolume
+    truckSpecs?.capacityVolume || truckCapacity?.volume || authTruck.capacityVolume
   );
   const truckWeight = Number(
-    truckSpecs?.capacityWeight || truckCapacity?.weight || AUTHORITATIVE_TRUCK.capacityWeight
+    truckSpecs?.capacityWeight || truckCapacity?.weight || authTruck.capacityWeight
   );
 
   const resolvedStops = useMemo(() => {
     if (Array.isArray(stops) && stops.length > 0) return stops;
-    return ['Chennai', 'Kanchipuram', 'Vellore', 'Hosur', 'Bangalore'];
-  }, [stops]);
+    if (Array.isArray(route?.stops) && route.stops.length > 0) return route.stops;
+    if (Array.isArray(route?.stopsDetails) && route.stopsDetails.length > 0) {
+      return route.stopsDetails.map(s => s.locationName || s.name || s);
+    }
+    if (Array.isArray(assignments) && assignments.length > 0) {
+      const stopsFromCargo = [];
+      assignments.forEach(a => {
+        const from = a.segmentRange?.fromStop || a.pickupStop || a.pickup || a.loadStop;
+        const to = a.segmentRange?.toStop || a.deliveryStop || a.delivery || a.unloadStop;
+        if (from && !stopsFromCargo.includes(from)) stopsFromCargo.push(from);
+        if (to && !stopsFromCargo.includes(to)) stopsFromCargo.push(to);
+      });
+      if (stopsFromCargo.length >= 2) return stopsFromCargo;
+    }
+    return ['Chennai', 'Trichy', 'Madurai'];
+  }, [stops, route, assignments]);
 
-  // ── 2. Canonical Load Plan Normalization ──
-  const canonicalItems = useMemo(() => {
-    return normalizeCanonicalPlacements(
+  // ── 2. Authoritative Canonical Resolution & Renderable Assignments ──
+  const {
+    canonicalItems,
+    activeItems,
+    validActiveItems: physicallyValidActiveItems,
+    quarantinedActiveItems,
+    futureItems,
+    totalPlannedCount
+  } = useMemo(() => {
+    return getCanonicalRenderableAssignments({
       assignments,
-      { length: truckLength, width: truckWidth, height: truckHeight },
-      resolvedStops
-    );
-  }, [assignments, truckLength, truckWidth, truckHeight, resolvedStops]);
+      truckDimensions: { length: truckLength, width: truckWidth, height: truckHeight },
+      stops: resolvedStops,
+      selectedSegment
+    });
+  }, [assignments, truckLength, truckWidth, truckHeight, resolvedStops, selectedSegment]);
 
-  // ── 3. Active Cargo for Current Segment ──
-  const activeItems = useMemo(() => {
-    return getActiveSegmentCargo(canonicalItems, selectedSegment);
-  }, [canonicalItems, selectedSegment]);
-
-  // ── 4. Authoritative Validation ──
+  // ── 3. Authoritative Multi-Stop & Overlap Validation ──
   const validation = useMemo(() => {
     return validateAuthoritativePlacements(
       canonicalItems,
@@ -138,26 +172,6 @@ const OperationalLoadVisualizer = ({
       resolvedStops
     );
   }, [canonicalItems, truckLength, truckWidth, truckHeight, resolvedStops]);
-
-  // ── 4B. Strict Pre-Render Physical Boundary Filter & Quarantine ──
-  // Under NO circumstances may a package outside the interior loading volume be rendered in 3D.
-  const { physicallyValidActiveItems, quarantinedActiveItems } = useMemo(() => {
-    const valid = [];
-    const quarantined = [];
-    activeItems.forEach(item => {
-      const check = validatePackageWithinTruck({
-        position: { x: item.x, y: item.y, z: item.z },
-        dimensions: { dx: item.dx, dy: item.dy, dz: item.dz },
-        truckDimensions: { length: truckLength, width: truckWidth, height: truckHeight }
-      });
-      if (check.valid) {
-        valid.push(item);
-      } else {
-        quarantined.push({ item, violations: check.violations });
-      }
-    });
-    return { physicallyValidActiveItems: valid, quarantinedActiveItems: quarantined };
-  }, [activeItems, truckLength, truckWidth, truckHeight]);
 
   useEffect(() => {
     if (quarantinedActiveItems.length > 0) {
@@ -208,6 +222,28 @@ const OperationalLoadVisualizer = ({
     return segs;
   }, [resolvedStops]);
 
+  // Per-segment active physical cargo count map
+  const segmentItemCounts = useMemo(() => {
+    const counts = {};
+    for (let i = 0; i < resolvedStops.length - 1; i++) {
+      counts[i] = canonicalItems.filter(item => item.pickupIndex <= i && item.deliveryIndex > i).length;
+    }
+    return counts;
+  }, [canonicalItems, resolvedStops]);
+
+  // Development Parity Diagnostics Check
+  useEffect(() => {
+    if (canonicalItems.length > 0) {
+      for (let i = 0; i < resolvedStops.length - 1; i++) {
+        const expectedCount = canonicalItems.filter(item => item.pickupIndex <= i && item.deliveryIndex > i).length;
+        const buttonCount = segmentItemCounts[i] ?? 0;
+        if (expectedCount !== buttonCount) {
+          console.warn(`[SEGMENT PARITY ERROR] Segment ${i} (${resolvedStops[i]} → ${resolvedStops[i + 1]}): Expected ${expectedCount}, Button shows ${buttonCount}`);
+        }
+      }
+    }
+  }, [canonicalItems, segmentItemCounts, resolvedStops]);
+
   // ── 6. Three.js 3D Viewport Setup ──
   useEffect(() => {
     if (viewMode !== '3D' || !mountRef.current) return;
@@ -217,17 +253,21 @@ const OperationalLoadVisualizer = ({
     scene.background = new THREE.Color(0x0a101f);
     sceneRef.current = scene;
 
+    const width = mountRef.current.clientWidth || 800;
+    const height = mountRef.current.clientHeight || 540;
+    if (width <= 0 || height <= 0) return;
+
     // B. Camera setup
-    const aspect = mountRef.current.clientWidth / mountRef.current.clientHeight;
+    const aspect = width / height;
     const camera = new THREE.PerspectiveCamera(40, aspect, 0.1, 1000);
     cameraRef.current = camera;
 
     // C. WebGL Renderer
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
-    renderer.setSize(mountRef.current.clientWidth, mountRef.current.clientHeight);
+    renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.type = THREE.PCFShadowMap;
     rendererRef.current = renderer;
 
     mountRef.current.innerHTML = '';
@@ -438,6 +478,7 @@ const OperationalLoadVisualizer = ({
       if (!mountRef.current || !renderer || !camera) return;
       const width = mountRef.current.clientWidth;
       const height = mountRef.current.clientHeight;
+      if (width <= 0 || height <= 0) return;
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
       renderer.setSize(width, height);
@@ -447,7 +488,16 @@ const OperationalLoadVisualizer = ({
     return () => {
       window.removeEventListener('resize', handleResize);
       cancelAnimationFrame(animId);
-      renderer.dispose();
+      if (renderer) {
+        renderer.dispose();
+        renderer.forceContextLoss();
+        if (renderer.domElement && renderer.domElement.parentNode) {
+          renderer.domElement.parentNode.removeChild(renderer.domElement);
+        }
+      }
+      if (mountRef.current) {
+        mountRef.current.innerHTML = '';
+      }
     };
   }, [viewMode, physicallyValidActiveItems, selectedItem, showDimensions, showAccessPath, truckLength, truckWidth, truckHeight, validation]);
 
@@ -620,7 +670,7 @@ const OperationalLoadVisualizer = ({
                   : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
               }`}
             >
-              #{seg.index + 1}: {seg.label}
+              #{seg.index + 1}: {seg.label} ({segmentItemCounts[seg.index] ?? 0} pkgs)
             </button>
           ))}
 
@@ -633,7 +683,7 @@ const OperationalLoadVisualizer = ({
                 : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
             }`}
           >
-            Full Corridor
+            Full Load / All Cargo ({canonicalItems.length} pkgs)
           </button>
         </div>
       </div>
@@ -695,17 +745,17 @@ const OperationalLoadVisualizer = ({
               <span className="w-2 h-2 rounded-full bg-emerald-400" />
               <span>LOCKED PLAN: {canonicalItems.length} Pkgs</span>
               <span className="text-slate-500">•</span>
-              <span>ONBOARD: {physicallyValidActiveItems.length} Pkgs</span>
+              <span>ACTIVE: {physicallyValidActiveItems.length} Pkgs</span>
               {quarantinedActiveItems.length > 0 && (
                 <>
                   <span className="text-slate-500">•</span>
                   <span className="text-red-400 font-bold">QUARANTINED: {quarantinedActiveItems.length} Pkgs</span>
                 </>
               )}
-              {canonicalItems.length > activeItems.length && (
+              {futureItems.length > 0 && (
                 <>
                   <span className="text-slate-500">•</span>
-                  <span className="text-amber-400">FUTURE: {canonicalItems.length - activeItems.length} Pkgs</span>
+                  <span className="text-amber-400">FUTURE: {futureItems.length} Pkgs</span>
                 </>
               )}
             </div>
@@ -740,7 +790,7 @@ const OperationalLoadVisualizer = ({
           {/* Segment Empty State Banner (Strict Plan vs Physical distinction) */}
           {activeItems.length === 0 && (
             <div className="absolute inset-0 pointer-events-none flex items-center justify-center p-4">
-              <div className="text-center px-6 py-5 bg-slate-950/90 backdrop-blur-md rounded-2xl border border-slate-800 shadow-2xl space-y-2 max-w-md">
+              <div className="text-center px-6 py-5 bg-slate-950/90 backdrop-blur-md rounded-2xl border border-slate-800 shadow-2xl space-y-2 max-w-md pointer-events-auto">
                 <div className="flex items-center justify-center gap-2">
                   <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-blue-950 text-blue-300 border border-blue-800">
                     LOCKED PLAN: {canonicalItems.length} PACKAGES
@@ -759,6 +809,17 @@ const OperationalLoadVisualizer = ({
                     ? `Awaiting loading operation at origin stop (${resolvedStops[0] || 'Chennai'}).`
                     : `Planned cargo for downstream stops will be loaded when the vehicle arrives at their designated origin.`}
                 </p>
+                {canonicalItems.length > 0 && selectedSegment !== 'ALL' && (
+                  <div className="pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedSegment('ALL')}
+                      className="px-4 py-1.5 rounded-xl text-xs font-black bg-blue-600 hover:bg-blue-500 text-white transition shadow cursor-pointer border-none"
+                    >
+                      Switch to Full Load View ({canonicalItems.length} pkgs)
+                    </button>
+                  </div>
+                )}
                 <div className="text-[10px] text-emerald-400/90 font-mono pt-1 border-t border-slate-800/80 flex justify-between">
                   <span>Capacity: {truckLength.toFixed(2)}m × {truckWidth.toFixed(2)}m × {truckHeight.toFixed(2)}m ({truckVolume.toFixed(1)} m³)</span>
                   <span>Payload: {truckWeight.toLocaleString()} kg</span>

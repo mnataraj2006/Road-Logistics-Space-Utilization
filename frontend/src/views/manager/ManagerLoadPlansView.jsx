@@ -1,83 +1,212 @@
 import React, { useState, useEffect } from 'react';
-import { Layers, Truck, ShieldCheck, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import {
+  Layers,
+  Truck,
+  ShieldCheck,
+  CheckCircle2,
+  AlertCircle,
+  RefreshCw,
+  Lock,
+  Unlock,
+  Sliders,
+  Calendar,
+  Percent
+} from 'lucide-react';
 import axios from 'axios';
 
 const ManagerLoadPlansView = () => {
   const [loadPlans, setLoadPlans] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [statusFilter, setStatusFilter] = useState('ALL');
+
+  const fetchLoadPlans = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const token = localStorage.getItem('token');
+      const authHeader = token ? { Authorization: `Bearer ${token}` } : {};
+      const res = await axios.get('/api/trips/load-plans/archive', { headers: authHeader });
+      const plans = res.data.loadPlans || [];
+      setLoadPlans(plans);
+    } catch (err) {
+      console.error('Error fetching load plans archive:', err);
+      setError(err.response?.data?.message || 'Failed to load versioned load plans.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchLoadPlans = async () => {
-      try {
-        const token = localStorage.getItem('token');
-        const authHeader = token ? { Authorization: `Bearer ${token}` } : {};
-        const res = await axios.get('/api/trips', { headers: authHeader });
-        const trips = Array.isArray(res.data) ? res.data : [];
-        
-        // Extract load plans from trips
-        const plans = trips.map(t => ({
-          tripId: t.tripId,
-          vehicleId: t.vehicleId,
-          routeId: t.routeId,
-          version: t.loadPlanVersion || 1,
-          status: t.status === 'PLANNED' ? 'DRAFT' : 'APPROVED',
-          isLocked: t.status !== 'PLANNED',
-          assignedCount: t.actualLoadSnapshot?.loadedShipments?.length || 4,
-          updatedAt: t.updatedAt || new Date().toISOString()
-        }));
-        setLoadPlans(plans);
-      } catch (err) {
-        console.error('Error fetching load plans:', err);
-      } finally {
-        setLoading(false);
-      }
-    };
     fetchLoadPlans();
   }, []);
 
+  const filteredPlans = loadPlans.filter((p) => {
+    if (statusFilter === 'ALL') return true;
+    return p.status === statusFilter;
+  });
+
+  const getStatusBadge = (status, isImmutable) => {
+    switch (status) {
+      case 'APPROVED':
+      case 'LOCKED':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-emerald-100 text-emerald-800 border border-emerald-200">
+            <Lock className="w-3 h-3" /> {status}
+          </span>
+        );
+      case 'GENERATED':
+      case 'UNDER_REVIEW':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-blue-100 text-blue-800 border border-blue-200">
+            <Unlock className="w-3 h-3" /> {status}
+          </span>
+        );
+      case 'SUPERSEDED':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-gray-100 text-gray-600 border border-gray-200">
+            SUPERSEDED
+          </span>
+        );
+      case 'REJECTED':
+      case 'CANCELLED':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-red-100 text-red-800 border border-red-200">
+            {status}
+          </span>
+        );
+      default:
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-amber-100 text-amber-800 border border-amber-200">
+            {status || 'DRAFT'}
+          </span>
+        );
+    }
+  };
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-black text-gray-900 tracking-tight flex items-center gap-2">
-          <Layers className="w-6 h-6 text-emerald-600" />
-          Versioned Load Plans & Optimistic Lock Archive
-        </h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Historical, approved, active, and superseded multi-stop loading configurations.
-        </p>
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-black text-gray-900 tracking-tight flex items-center gap-2">
+            <Layers className="w-6 h-6 text-emerald-600" />
+            Versioned Load Plans & Optimistic Lock Archive
+          </h1>
+          <p className="text-sm text-gray-500 mt-1">
+            Authoritative, persistent, and immutable multi-stop loading configurations generated by the 3D optimizer.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            onClick={fetchLoadPlans}
+            disabled={loading}
+            className="inline-flex items-center gap-2 px-3.5 py-2 bg-white hover:bg-gray-50 border border-gray-200 text-gray-700 rounded-xl text-xs font-bold shadow-xs transition cursor-pointer disabled:opacity-60"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <span>Refresh</span>
+          </button>
+          <Link
+            to="/manager/optimizer"
+            className="no-underline inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-sm transition"
+          >
+            <Sliders className="w-3.5 h-3.5" />
+            <span>Open Optimizer</span>
+          </Link>
+        </div>
       </div>
 
-      <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
-              <tr className="border-b border-gray-100 text-gray-400 font-bold uppercase tracking-wider">
-                <th className="pb-3 font-semibold">Associated Trip</th>
-                <th className="pb-3 font-semibold">Truck Asset</th>
-                <th className="pb-3 font-semibold">Route Lane</th>
-                <th className="pb-3 font-semibold">Plan Version</th>
-                <th className="pb-3 font-semibold">Packages Boarded</th>
-                <th className="pb-3 font-semibold">Lifecycle State</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {loadPlans.map((p, idx) => (
-                <tr key={idx} className="hover:bg-gray-50/70 transition">
-                  <td className="py-3 font-mono font-bold text-gray-900">{p.tripId}</td>
-                  <td className="py-3 font-semibold text-gray-700">{p.vehicleId}</td>
-                  <td className="py-3 text-gray-800">{p.routeId}</td>
-                  <td className="py-3 font-mono font-bold text-blue-700">v{p.version}.0</td>
-                  <td className="py-3 font-bold text-gray-900">{p.assignedCount} consignments</td>
-                  <td className="py-3">
-                    <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-emerald-100 text-emerald-800">
-                      {p.status}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {/* Filter Tabs */}
+      <div className="flex items-center gap-1 bg-gray-100 p-1 rounded-xl w-fit">
+        {['ALL', 'APPROVED', 'GENERATED', 'SUPERSEDED'].map((st) => (
+          <button
+            key={st}
+            onClick={() => setStatusFilter(st)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition border-none cursor-pointer ${
+              statusFilter === st
+                ? 'bg-white text-gray-900 shadow-xs'
+                : 'bg-transparent text-gray-500 hover:text-gray-900'
+            }`}
+          >
+            {st} {st !== 'ALL' && `(${loadPlans.filter((p) => p.status === st).length})`}
+          </button>
+        ))}
+      </div>
+
+      {/* Error state */}
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-2xl p-4 flex items-center gap-3 text-xs font-semibold text-red-700">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span>{error}</span>
         </div>
+      )}
+
+      {/* Table */}
+      <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
+        {loading && loadPlans.length === 0 ? (
+          <div className="text-center py-12 text-gray-400 text-xs flex items-center justify-center gap-2">
+            <RefreshCw className="w-4 h-4 animate-spin text-emerald-600" />
+            <span>Loading real LoadPlan archive from database...</span>
+          </div>
+        ) : filteredPlans.length === 0 ? (
+          <div className="text-center py-12 text-gray-400 text-xs">
+            No versioned load plans found matching filter &quot;{statusFilter}&quot;.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="border-b border-gray-100 text-gray-400 font-bold uppercase tracking-wider">
+                  <th className="pb-3 font-semibold">Load Plan Reference</th>
+                  <th className="pb-3 font-semibold">Associated Trip</th>
+                  <th className="pb-3 font-semibold">Truck & Route</th>
+                  <th className="pb-3 font-semibold">Version</th>
+                  <th className="pb-3 font-semibold">Real Consignments</th>
+                  <th className="pb-3 font-semibold">Volume Util.</th>
+                  <th className="pb-3 font-semibold">Weight Util.</th>
+                  <th className="pb-3 font-semibold">Lifecycle State</th>
+                  <th className="pb-3 font-semibold">Generated At</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {filteredPlans.map((p) => (
+                  <tr key={p.loadPlanId || p._id} className="hover:bg-gray-50/70 transition">
+                    <td className="py-3 font-mono font-bold text-gray-900">
+                      {p.loadPlanId}
+                    </td>
+                    <td className="py-3 font-mono font-bold text-emerald-700">
+                      {p.tripId}
+                    </td>
+                    <td className="py-3">
+                      <span className="font-semibold text-gray-800 block">{p.vehicleId}</span>
+                      <span className="text-[10px] text-gray-400 font-mono">{p.routeId}</span>
+                    </td>
+                    <td className="py-3 font-mono font-bold text-blue-700">
+                      v{p.version}.0
+                    </td>
+                    <td className="py-3 font-bold text-gray-900">
+                      {p.assignedCount ?? 0} packages
+                    </td>
+                    <td className="py-3 font-semibold text-gray-800">
+                      {Number(p.volumeUtilization || 0).toFixed(1)}%
+                    </td>
+                    <td className="py-3 font-semibold text-gray-800">
+                      {Number(p.weightUtilization || 0).toFixed(1)}%
+                    </td>
+                    <td className="py-3">
+                      {getStatusBadge(p.status, p.isImmutable)}
+                    </td>
+                    <td className="py-3 text-gray-500 text-[11px]">
+                      {p.generatedAt ? new Date(p.generatedAt).toLocaleString() : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -18,6 +18,7 @@ const suites = [
   { name: 'Concurrency & Race Condition Defenses', script: 'test_concurrency_and_race_conditions.js' },
   { name: 'Operational Audit & Lifecycle Traceability', script: 'test_audit_event_traceability.js' },
   { name: 'Logistics Performance & Baseline Analytics', script: 'test_logistics_analytics.js' },
+  { name: 'Data Foundation, Quality & Analytics Pipeline', script: 'test_data_foundation_and_analytics.js' },
   { name: 'Account Creation & Two-Role Architecture', script: 'test_account_creation_architecture.js' },
   { name: 'Multi-Tenant Marketplace & Tenant Isolation', script: 'test_multitenant_marketplace.js' }
 ];
