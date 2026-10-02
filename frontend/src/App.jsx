@@ -24,7 +24,6 @@ import ManagerTripsView from './views/manager/ManagerTripsView';
 import ManagerOptimizationView from './views/manager/ManagerOptimizationView';
 import ManagerLoadPlansView from './views/manager/ManagerLoadPlansView';
 import ManagerLiveTripOpsView from './views/manager/ManagerLiveTripOpsView';
-import ManagerStopOpsView from './views/manager/ManagerStopOpsView';
 import ManagerFleetView from './views/manager/ManagerFleetView';
 import ManagerRoutesView from './views/manager/ManagerRoutesView';
 import ManagerAnalyticsView from './views/manager/ManagerAnalyticsView';
@@ -115,7 +114,7 @@ function App() {
           <Route path="/manager/optimizer" element={<ProtectedRoute allowedRoles={['logistics_manager']}><ManagerOptimizationView /></ProtectedRoute>} />
           <Route path="/manager/load-plans" element={<ProtectedRoute allowedRoles={['logistics_manager']}><ManagerLoadPlansView /></ProtectedRoute>} />
           <Route path="/manager/live-trip" element={<ProtectedRoute allowedRoles={['logistics_manager']}><ManagerLiveTripOpsView /></ProtectedRoute>} />
-          <Route path="/manager/stop-ops" element={<ProtectedRoute allowedRoles={['logistics_manager']}><ManagerStopOpsView /></ProtectedRoute>} />
+          <Route path="/manager/stop-ops" element={<Navigate to="/manager/live-trip" replace />} />
           <Route path="/manager/fleet" element={<ProtectedRoute allowedRoles={['logistics_manager']}><ManagerFleetView /></ProtectedRoute>} />
           <Route path="/manager/routes" element={<ProtectedRoute allowedRoles={['logistics_manager']}><ManagerRoutesView /></ProtectedRoute>} />
           <Route path="/manager/analytics" element={<ProtectedRoute allowedRoles={['logistics_manager']}><ManagerAnalyticsView /></ProtectedRoute>} />
@@ -126,7 +125,7 @@ function App() {
           <Route path="/carrier/fleet" element={<Navigate to="/manager/fleet" replace />} />
           <Route path="/carrier/trips" element={<Navigate to="/manager/trips" replace />} />
           <Route path="/carrier/vehicles" element={<Navigate to="/manager/fleet" replace />} />
-          <Route path="/carrier/trip-ops" element={<Navigate to="/manager/stop-ops" replace />} />
+          <Route path="/carrier/trip-ops" element={<Navigate to="/manager/live-trip" replace />} />
           <Route path="/carrier/load-status" element={<Navigate to="/manager/live-trip" replace />} />
           <Route path="/carrier/dashboard" element={<Navigate to="/manager/dashboard" replace />} />
           <Route path="/carrier" element={<Navigate to="/manager/dashboard" replace />} />

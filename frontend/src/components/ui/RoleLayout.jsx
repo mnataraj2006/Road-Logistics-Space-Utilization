@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { AuthContext } from '../../context/AuthContext';
 import {
   Truck, Search, Box, CalendarCheck, MapPin, User, LogOut,
-  Sliders, ShieldCheck, Activity, Layers, Route as RouteIcon,
+  Sliders, Activity, Layers, Route as RouteIcon,
   BarChart3, FileCheck, AlertCircle, Menu, X, ChevronLeft, ChevronRight, BrainCircuit
 } from 'lucide-react';
 
@@ -28,8 +28,7 @@ const ROLE_NAV_GROUPS = {
     {
       groupLabel: 'LIVE OPERATIONS',
       items: [
-        { label: 'Live Operations', path: '/manager/live-trip',   icon: Truck      },
-        { label: 'Hub Gate-In',     path: '/manager/stop-ops',    icon: ShieldCheck}
+        { label: 'Live Operations', path: '/manager/live-trip',   icon: Truck      }
       ]
     },
     {
