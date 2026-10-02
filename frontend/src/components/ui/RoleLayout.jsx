@@ -29,7 +29,7 @@ const ROLE_NAV_GROUPS = {
       groupLabel: 'LIVE OPERATIONS',
       items: [
         { label: 'Live Operations', path: '/manager/live-trip',   icon: Truck      },
-        { label: 'Stop Ops & QR',   path: '/manager/stop-ops',    icon: ShieldCheck}
+        { label: 'Hub Gate-In',     path: '/manager/stop-ops',    icon: ShieldCheck}
       ]
     },
     {

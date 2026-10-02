@@ -1,5 +1,5 @@
 import React from 'react';
-import { MapPin, CheckCircle2, QrCode } from 'lucide-react';
+import { MapPin, CheckCircle2 } from 'lucide-react';
 
 /**
  * Multi-stop route pipeline showing authoritative progress from origin to final destination.
@@ -124,10 +124,10 @@ const RouteStepTracker = ({
                   <button
                     onClick={() => onVerifyStop(stopObj || stop, idx)}
                     className="mt-2 inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-[10px] font-black shadow-sm transition cursor-pointer border-none"
-                    title={`Verify Arrival at ${stopName}`}
+                    title={`Confirm Arrival at ${stopName}`}
                   >
-                    <QrCode className="w-3 h-3" />
-                    Verify
+                    <CheckCircle2 className="w-3 h-3" />
+                    Confirm Arrival
                   </button>
                 )}
               </div>

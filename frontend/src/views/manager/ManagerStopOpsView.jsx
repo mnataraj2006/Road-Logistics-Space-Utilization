@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ShieldCheck, QrCode, CheckCircle2, AlertTriangle, RefreshCw, MapPin, Truck } from 'lucide-react';
+import { ShieldCheck, CheckCircle2, AlertTriangle, RefreshCw, MapPin, Truck } from 'lucide-react';
 import axios from 'axios';
 
 const ManagerStopOpsView = () => {
@@ -72,10 +72,10 @@ const ManagerStopOpsView = () => {
       <div>
         <h1 className="text-2xl font-black text-gray-900 tracking-tight flex items-center gap-2">
           <ShieldCheck className="w-6 h-6 text-emerald-600" />
-          Cryptographic Stop Verification & Arrival Execution
+          Hub Gate-In & Stop Arrival Execution
         </h1>
         <p className="text-sm text-gray-500 mt-1">
-          Validate single-use HMAC stop tokens, enforce strict linear sequence, and commit unload/load operations atomically.
+          Supervise truck gate arrivals, offload destination shipments, load downstream cargo, and atomically update available trailer capacity.
         </p>
       </div>
 
@@ -145,15 +145,15 @@ const ManagerStopOpsView = () => {
 
           <div>
             <label className="block text-xs font-bold text-gray-700 mb-1">
-              Scanned Stop Security Token (or HMAC STP-SEC... string)
+              Hub Gate Key / Stop Verification Token
             </label>
             <div className="relative">
-              <QrCode className="w-4 h-4 text-gray-400 absolute left-3 top-3" />
+              <MapPin className="w-4 h-4 text-gray-400 absolute left-3 top-3" />
               <input
                 type="text"
                 value={tokenInput}
                 onChange={(e) => handleTokenChange(e.target.value)}
-                placeholder="Scan QR or paste STP-SEC token / QR token"
+                placeholder="Enter hub gate key or stop token (e.g. STPTKN-... or STP-SEC...)"
                 required
                 className="w-full pl-9 pr-3 py-2 text-xs font-semibold border border-gray-300 rounded-xl focus:border-emerald-500 outline-none"
               />
@@ -167,7 +167,7 @@ const ManagerStopOpsView = () => {
               className="inline-flex items-center gap-2 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black shadow-sm transition cursor-pointer border-none disabled:opacity-50"
             >
               {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
-              <span>Verify & Execute Stop</span>
+              <span>Confirm Truck Arrival & Gate-In</span>
             </button>
           </div>
         </form>

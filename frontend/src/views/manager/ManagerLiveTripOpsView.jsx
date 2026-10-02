@@ -185,7 +185,7 @@ const ManagerLiveTripOpsView = () => {
       };
 
       const res = await api.post('/transit/verify-stop', payload);
-      setActionMessage(res.data.message || 'Stop arrival verified! Cargo unloads and loads executed.');
+      setActionMessage(res.data.message || 'Truck arrival confirmed! Destination cargo offloaded & remaining trailer capacity updated.');
       await loadTripDetail(selectedTripId, true);
       await fetchTrips(true);
     } catch (err) {
@@ -590,8 +590,8 @@ const ManagerLiveTripOpsView = () => {
                         disabled={detailLoading}
                         className="inline-flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black shadow-sm transition cursor-pointer border-none"
                       >
-                        <QrCode className="w-4 h-4" />
-                        <span>Simulate QR Scan: Arrive at {nextStopName}</span>
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>Confirm Truck Arrival at {nextStopName}</span>
                       </button>
                     )}
 

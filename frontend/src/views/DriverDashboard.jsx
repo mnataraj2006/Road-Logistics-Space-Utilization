@@ -339,18 +339,18 @@ const DriverDashboard = () => {
           {isTripActive && expectedStop && (
             <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 space-y-4">
               <div>
-                <h3 className="text-[13px] font-black text-gray-900 uppercase tracking-wide">Stop Verification Terminal</h3>
-                <p className="text-[10px] text-gray-400 font-bold mt-0.5">Scan the QR code printed at the warehouse location</p>
+                <h3 className="text-[13px] font-black text-gray-900 uppercase tracking-wide">Stop Arrival & Gate-In</h3>
+                <p className="text-[10px] text-gray-400 font-bold mt-0.5">Confirm truck arrival to execute cargo unloads & loads</p>
               </div>
 
-              {/* Viewfinder Mockup */}
-              <div className="relative h-40 bg-slate-900 rounded-xl overflow-hidden flex flex-col items-center justify-center text-center p-4">
-                <div className="absolute top-6 bottom-6 left-12 right-12 border-2 border-dashed border-green-500 rounded-lg animate-pulse" />
-                <div className="absolute left-0 right-0 top-1/2 h-[1px] bg-green-400 shadow-[0_0_8px_#4ade80] animate-bounce" />
-                
-                <QrCode className="w-10 h-10 text-white relative z-10" />
-                <span className="text-[9px] font-black text-gray-450 uppercase tracking-widest mt-3 relative z-10">
-                  Align stop QR code in window
+              {/* Hub Gate Header */}
+              <div className="relative h-28 bg-gradient-to-br from-slate-900 to-slate-800 rounded-xl overflow-hidden flex flex-col items-center justify-center text-center p-4">
+                <MapPin className="w-8 h-8 text-emerald-400 mb-1" />
+                <span className="text-[12px] font-black text-white uppercase tracking-wider">
+                  {expectedStop.locationName} Hub
+                </span>
+                <span className="text-[10px] font-bold text-slate-400 mt-0.5">
+                  Stop #{expectedStop.sequenceNumber || expectedStop.sequence || 1} on Route
                 </span>
               </div>
 
@@ -359,40 +359,20 @@ const DriverDashboard = () => {
                 <div>
                   <p className="font-black text-blue-900">Expected Next Stop: {expectedStop.locationName}</p>
                   <p className="font-semibold text-[10px] text-blue-700 mt-0.5 leading-relaxed">
-                    Verify arrival at {expectedStop.locationName} to execute planned cargo operations.
+                    Confirm arrival to offload arriving packages and update remaining trailer capacity.
                   </p>
                 </div>
               </div>
 
-              {/* Mock Input terminal */}
+              {/* Arrival confirmation button */}
               <div className="space-y-3 pt-2 border-t border-gray-50">
-                <div>
-                  <span className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Scanner Simulator</span>
-                  <div className="flex items-center space-x-2 mt-1">
-                    <input 
-                      type="text"
-                      value={scanToken}
-                      onChange={(e) => setScanToken(e.target.value)}
-                      placeholder="Paste STPTKN-... token"
-                      className="flex-1 px-3 py-2 border border-gray-200 rounded-xl text-[11px] font-semibold bg-gray-50/50"
-                    />
-                    <button
-                      onClick={() => handleVerifyQR()}
-                      disabled={submitting}
-                      className="px-4 py-2 bg-gray-900 text-white rounded-xl text-[11px] font-black hover:bg-gray-800 transition-colors cursor-pointer border-none"
-                    >
-                      Verify
-                    </button>
-                  </div>
-                </div>
-
                 <button
-                  onClick={() => handleVerifyQR(expectedStop.qrToken)}
+                  onClick={() => handleVerifyQR(expectedStop.qrToken || expectedStop.secureToken, expectedStop.stopId)}
                   disabled={submitting}
-                  className="w-full py-2.5 rounded-xl border border-transparent bg-[#16a34a] hover:bg-[#15803d] text-white text-[11px] font-black transition-colors cursor-pointer flex items-center justify-center space-x-1.5 shadow-sm shadow-green-600/20"
+                  className="w-full py-3 rounded-xl border border-transparent bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black transition-colors cursor-pointer flex items-center justify-center space-x-2 shadow-sm shadow-emerald-600/20"
                 >
-                  <CheckCircle className="w-3.5 h-3.5" />
-                  <span>Simulate QR Scan: Arrive at {expectedStop.locationName}</span>
+                  <CheckCircle className="w-4 h-4" />
+                  <span>Confirm Truck Arrival at {expectedStop.locationName}</span>
                 </button>
               </div>
             </div>
