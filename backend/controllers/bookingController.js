@@ -252,9 +252,16 @@ export const createBooking = async (req, res) => {
       }
     }
 
-    // Generate Booking ID
+    // Generate Booking ID (collision-safe loop)
     const count = await Booking.countDocuments({});
-    const bookingId = `BKG-${String(count + 1).padStart(6, '0')}`;
+    let nextNum = count + 1;
+    let bookingId = `BKG-${String(nextNum).padStart(6, '0')}`;
+    let proposedShipmentId = `SHP-${bookingId}`;
+    while (await Booking.findOne({ bookingId }) || await Shipment.findOne({ shipmentId: proposedShipmentId })) {
+      nextNum++;
+      bookingId = `BKG-${String(nextNum).padStart(6, '0')}`;
+      proposedShipmentId = `SHP-${bookingId}`;
+    }
 
     // Pricing calculation with dynamic discount
     let basePrice = newVolume * 150;
