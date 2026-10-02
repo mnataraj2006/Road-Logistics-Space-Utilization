@@ -207,31 +207,55 @@ export const getTripById = async (req, res) => {
 
     if (!trip) return res.status(404).json({ success: false, message: `Trip ${tripId} not found.` });
 
-    let stops = await TripStop.find({ tripId }).sort({ sequence: 1 });
-    if (!stops || stops.length === 0) {
-      const routeStops = (trip.route?.stopsDetails && trip.route.stopsDetails.length > 0)
-        ? trip.route.stopsDetails
-        : [trip.route?.source, ...(trip.route?.stops || []), trip.route?.destination].filter(Boolean).map((loc, idx) => ({
-            stopId: `STP-${idx + 1}`,
-            sequenceNumber: idx + 1,
-            locationName: loc,
-            status: idx <= (trip.currentStopIndex || 0) ? 'Completed' : idx === (trip.currentStopIndex || 0) + 1 ? 'Ready' : 'Upcoming'
-          }));
+    const rawTripStops = await TripStop.find({ tripId }).sort({ sequence: 1 });
+    const tripStopMap = new Map();
+    rawTripStops.forEach(ts => {
+      if (ts.sequence != null) tripStopMap.set(ts.sequence, ts);
+      if (ts.location) tripStopMap.set(ts.location.toLowerCase().trim(), ts);
+      if (ts.stopId) tripStopMap.set(ts.stopId, ts);
+    });
 
-      stops = routeStops.map((rs, idx) => ({
+    const routeStops = (trip.route?.stopsDetails && trip.route.stopsDetails.length > 0)
+      ? trip.route.stopsDetails
+      : [trip.route?.source, ...(trip.route?.stops || []), trip.route?.destination].filter(Boolean).map((loc, idx) => ({
+          stopId: `STP-${idx + 1}`,
+          sequenceNumber: idx + 1,
+          locationName: loc,
+          status: idx <= (trip.currentStopIndex || 0) ? 'Completed' : idx === (trip.currentStopIndex || 0) + 1 ? 'Ready' : 'Upcoming'
+        }));
+
+    const stops = routeStops.map((rs, idx) => {
+      const seq = rs.sequenceNumber || idx + 1;
+      const locName = rs.locationName || rs.location || rs;
+      const matchedTs = tripStopMap.get(seq) || tripStopMap.get(locName.toLowerCase().trim()) || tripStopMap.get(rs.stopId);
+
+      const isCompleted = trip.status === 'COMPLETED' ||
+        matchedTs?.verificationStatus === 'COMPLETED' ||
+        matchedTs?.status === 'Completed' ||
+        idx < (trip.currentStopIndex || 0) ||
+        (idx === 0 && ['DISPATCHED', 'IN_TRANSIT', 'AT_STOP'].includes(trip.status));
+
+      const isReady = !isCompleted && trip.status !== 'COMPLETED' && (
+        matchedTs?.verificationStatus === 'READY' ||
+        matchedTs?.status === 'Ready' ||
+        idx === (trip.currentStopIndex || 0) ||
+        idx === (trip.currentStopIndex || 0) + 1
+      );
+
+      return {
         tripId: trip.tripId,
-        stopId: rs.stopId || `STP-${idx + 1}`,
-        sequence: rs.sequenceNumber || idx + 1,
-        location: rs.locationName || rs.location || rs,
-        locationName: rs.locationName || rs.location || rs,
-        verificationStatus: (rs.status === 'Completed' || idx <= (trip.currentStopIndex || 0))
-          ? 'COMPLETED'
-          : (rs.status === 'Ready' || idx === (trip.currentStopIndex || 0) + 1)
-          ? 'READY'
-          : 'UPCOMING',
-        qrToken: rs.qrToken || `STPTKN-${trip.tripId}-${idx + 1}`
-      }));
-    }
+        stopId: matchedTs?.stopId || rs.stopId || `STP-${idx + 1}`,
+        sequence: seq,
+        location: locName,
+        locationName: locName,
+        verificationStatus: isCompleted ? 'COMPLETED' : isReady ? 'READY' : 'UPCOMING',
+        qrToken: matchedTs?.qrToken || matchedTs?.secureToken || rs.qrToken || `STPTKN-${trip.tripId}-${idx + 1}`,
+        secureToken: matchedTs?.secureToken || matchedTs?.qrToken || rs.qrToken || `STPTKN-${trip.tripId}-${idx + 1}`,
+        plannedArrival: matchedTs?.plannedArrival || null,
+        actualArrival: matchedTs?.actualArrival || null,
+        completedAt: matchedTs?.completedAt || null
+      };
+    });
     
     // Find authoritative active / approved / locked / latest LoadPlan
     const latestPlan = await LoadPlan.findOne({

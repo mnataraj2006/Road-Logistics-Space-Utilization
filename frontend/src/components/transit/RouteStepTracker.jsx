@@ -14,13 +14,26 @@ const RouteStepTracker = ({
 }) => {
   const getStopName = (s) => (typeof s === 'string' ? s : s.locationName || s.location || s.name || 'Stop');
 
-  // Compute next pending index (first stop that is not COMPLETED)
+  // Compute next pending index within `stops` (first stop that is not COMPLETED)
   let nextPendingIndex = -1;
-  if (stopsList && stopsList.length > 0) {
-    nextPendingIndex = stopsList.findIndex((s, idx) => idx > 0 && s.verificationStatus !== 'COMPLETED');
-  }
-  if (nextPendingIndex === -1 && tripStatus !== 'COMPLETED') {
-    nextPendingIndex = Math.min(stops.length - 1, (currentStopIndex || 0) + 1);
+  if (tripStatus === 'COMPLETED') {
+    nextPendingIndex = -1;
+  } else {
+    nextPendingIndex = stops.findIndex((stop, idx) => {
+      if (idx === 0) return false; // Origin is departed once in transit
+      const stopName = getStopName(stop);
+      const matched = stopsList?.find(
+        (s) =>
+          getStopName(s).toLowerCase().trim() === stopName.toLowerCase().trim() ||
+          s.sequence === idx + 1 ||
+          s.sequenceNumber === idx + 1
+      );
+      return !matched || matched.verificationStatus !== 'COMPLETED';
+    });
+
+    if (nextPendingIndex === -1 && tripStatus !== 'COMPLETED') {
+      nextPendingIndex = Math.min(stops.length - 1, (currentStopIndex || 0) + 1);
+    }
   }
 
   return (
@@ -31,25 +44,32 @@ const RouteStepTracker = ({
           Multi-Stop Route Pipeline
         </h4>
         <span className="text-xs font-bold text-gray-700">
-          Stop {Math.min(stops.length, (nextPendingIndex >= 0 ? nextPendingIndex + 1 : currentStopIndex + 1))} of {stops.length}
+          Stop {Math.min(stops.length, nextPendingIndex >= 0 ? nextPendingIndex + 1 : currentStopIndex + 1)} of {stops.length}
         </span>
       </div>
 
       <div className="relative flex items-center justify-between gap-2 overflow-x-auto py-3">
         {stops.map((stop, idx) => {
           const stopName = getStopName(stop);
-          const stopObj = stopsList?.[idx] || (typeof stop === 'object' ? stop : null);
+          // Look up stopObj by matching name or sequence instead of naive array index
+          const stopObj =
+            stopsList?.find(
+              (s) =>
+                getStopName(s).toLowerCase().trim() === stopName.toLowerCase().trim() ||
+                s.sequence === idx + 1 ||
+                s.sequenceNumber === idx + 1
+            ) || (typeof stop === 'object' ? stop : null);
 
           // Authoritative completion status
           const isCompleted =
             tripStatus === 'COMPLETED' ||
             stopObj?.verificationStatus === 'COMPLETED' ||
-            (nextPendingIndex > 0 ? idx < nextPendingIndex : idx <= currentStopIndex && idx === 0);
+            (nextPendingIndex > 0 ? idx < nextPendingIndex : idx === 0 && ['DISPATCHED', 'IN_TRANSIT', 'AT_STOP'].includes(tripStatus));
 
           const isNextActive =
             !isCompleted &&
             tripStatus !== 'COMPLETED' &&
-            (idx === nextPendingIndex || stopObj?.verificationStatus === 'READY');
+            idx === nextPendingIndex;
 
           const isUpcoming = !isCompleted && !isNextActive;
 
@@ -102,7 +122,7 @@ const RouteStepTracker = ({
 
                 {isNextActive && onVerifyStop && ['DISPATCHED', 'IN_TRANSIT', 'AT_STOP'].includes(tripStatus) && (
                   <button
-                    onClick={() => onVerifyStop(stop, idx)}
+                    onClick={() => onVerifyStop(stopObj || stop, idx)}
                     className="mt-2 inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-[10px] font-black shadow-sm transition cursor-pointer border-none"
                     title={`Verify Arrival at ${stopName}`}
                   >

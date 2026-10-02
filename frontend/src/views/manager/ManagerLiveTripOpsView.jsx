@@ -38,21 +38,30 @@ const ManagerLiveTripOpsView = () => {
   const [actionMessage, setActionMessage] = useState(null);
   const [error, setError] = useState(null);
   const [seeding, setSeeding] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   // Load Trips
-  const fetchTrips = async () => {
-    setLoading(true);
+  const fetchTrips = async (silent = false) => {
+    if (!silent && trips.length === 0) setLoading(true);
+    setRefreshing(true);
     try {
       const res = await api.get('/trips');
       const list = Array.isArray(res.data) ? res.data : [];
       setTrips(list);
 
       if (list.length > 0) {
-        // Default to active / in-transit / ready trip, or first
-        const activeTrip =
-          list.find((t) => ['DISPATCHED', 'IN_TRANSIT', 'AT_STOP', 'READY_FOR_DISPATCH'].includes(t.status?.toUpperCase())) || list[0];
-        setSelectedTripId(activeTrip.tripId);
-        loadTripDetail(activeTrip.tripId);
+        // If current selected trip is in list, keep it; otherwise pick active trip
+        const currentStillExists = selectedTripId && list.some(t => t.tripId === selectedTripId);
+        const activeTrip = currentStillExists
+          ? list.find(t => t.tripId === selectedTripId)
+          : (list.find((t) => ['DISPATCHED', 'IN_TRANSIT', 'AT_STOP', 'READY_FOR_DISPATCH'].includes(t.status?.toUpperCase())) || list[0]);
+
+        if (activeTrip) {
+          if (activeTrip.tripId !== selectedTripId) {
+            setSelectedTripId(activeTrip.tripId);
+          }
+          await loadTripDetail(activeTrip.tripId, silent);
+        }
       } else {
         setSelectedTripId('');
         setTripDetail(null);
@@ -61,16 +70,24 @@ const ManagerLiveTripOpsView = () => {
       console.error('Error fetching trips:', err);
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   };
 
   useEffect(() => {
-    fetchTrips();
-  }, []);
+    fetchTrips(false);
+    // Background auto-refresh every 15s to keep live operations up to date
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        fetchTrips(true);
+      }
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [selectedTripId]);
 
-  const loadTripDetail = async (tId) => {
+  const loadTripDetail = async (tId, silent = false) => {
     if (!tId) return;
-    setDetailLoading(true);
+    if (!silent) setDetailLoading(true);
     setError(null);
     try {
       const res = await api.get(`/trips/${tId}`);
@@ -92,9 +109,9 @@ const ManagerLiveTripOpsView = () => {
       });
     } catch (err) {
       console.error('Error fetching trip detail:', err);
-      setError('Failed to fetch trip details.');
+      if (!silent) setError('Failed to fetch trip details.');
     } finally {
-      setDetailLoading(false);
+      if (!silent) setDetailLoading(false);
     }
   };
 
@@ -115,25 +132,48 @@ const ManagerLiveTripOpsView = () => {
     setError(null);
     try {
       const stopsList = tripDetail.stopsList || [];
+      const derivedStops = tripDetail.stops || [];
       let targetStopObj = null;
 
-      if (stopIndexArg !== undefined && stopsList[stopIndexArg]) {
-        targetStopObj = stopsList[stopIndexArg];
-      } else if (stopArg && typeof stopArg === 'object' && stopArg.stopId) {
+      if (stopArg && typeof stopArg === 'object' && stopArg.stopId) {
         targetStopObj = stopArg;
-      } else {
-        targetStopObj =
-          stopsList.find((s, idx) => idx > 0 && s.verificationStatus !== 'COMPLETED') ||
-          stopsList[(tripDetail.currentStopIndex || 0) + 1] ||
-          stopsList[stopsList.length - 1];
+      } else if (stopIndexArg !== undefined && derivedStops[stopIndexArg]) {
+        const sName = derivedStops[stopIndexArg];
+        targetStopObj = stopsList.find(s => 
+          (s.location || s.locationName)?.toLowerCase().trim() === sName.toLowerCase().trim() ||
+          s.sequence === stopIndexArg + 1 ||
+          s.sequenceNumber === stopIndexArg + 1
+        );
       }
 
-      const resolvedIndex = stopIndexArg !== undefined
-        ? stopIndexArg
-        : stopsList.findIndex((s, idx) => idx > 0 && s.verificationStatus !== 'COMPLETED');
+      if (!targetStopObj) {
+        const nextPendingIdx = derivedStops.findIndex((st, idx) => {
+          if (idx === 0) return false;
+          const sObj = stopsList.find(s => 
+            (s.location || s.locationName)?.toLowerCase().trim() === st?.toLowerCase().trim() ||
+            s.sequence === idx + 1
+          );
+          return !sObj || sObj.verificationStatus !== 'COMPLETED';
+        });
+
+        if (nextPendingIdx > 0) {
+          const nextName = derivedStops[nextPendingIdx];
+          targetStopObj = stopsList.find(s =>
+            (s.location || s.locationName)?.toLowerCase().trim() === nextName.toLowerCase().trim() ||
+            s.sequence === nextPendingIdx + 1
+          ) || {
+            location: nextName,
+            locationName: nextName,
+            sequence: nextPendingIdx + 1
+          };
+        }
+      }
 
       const token = targetStopObj?.secureToken || targetStopObj?.qrToken || '';
       const stopId = targetStopObj?.stopId || (typeof stopArg === 'string' ? stopArg : targetStopObj?.location || '');
+      const resolvedIndex = targetStopObj?.sequence != null
+        ? targetStopObj.sequence - 1
+        : (stopIndexArg !== undefined ? stopIndexArg : undefined);
 
       const payload = {
         tripId: selectedTripId,
@@ -141,13 +181,13 @@ const ManagerLiveTripOpsView = () => {
         qrToken: token,
         secureToken: token,
         stopId: stopId,
-        stopIndex: resolvedIndex >= 0 ? resolvedIndex : undefined
+        stopIndex: resolvedIndex
       };
 
       const res = await api.post('/transit/verify-stop', payload);
       setActionMessage(res.data.message || 'Stop arrival verified! Cargo unloads and loads executed.');
-      await loadTripDetail(selectedTripId);
-      await fetchTrips();
+      await loadTripDetail(selectedTripId, true);
+      await fetchTrips(true);
     } catch (err) {
       console.error('Stop verification error:', err);
       setError(err.response?.data?.message || 'Failed to verify stop arrival.');
@@ -359,12 +399,12 @@ const ManagerLiveTripOpsView = () => {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={fetchTrips}
-            disabled={loading}
+            onClick={() => fetchTrips(true)}
+            disabled={loading || refreshing}
             className="p-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-600 hover:text-gray-900 transition shadow-xs cursor-pointer"
             title="Refresh Trips"
           >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-4 h-4 ${refreshing || loading ? 'animate-spin text-emerald-600' : ''}`} />
           </button>
 
           {trips.length > 0 && (
@@ -514,20 +554,39 @@ const ManagerLiveTripOpsView = () => {
               )}
 
               {['DISPATCHED', 'IN_TRANSIT', 'AT_STOP'].includes(tripDetail.status) && (() => {
-                const nextPending =
-                  tripDetail.stopsList?.find((s, idx) => idx > 0 && s.verificationStatus !== 'COMPLETED') ||
-                  tripDetail.stopsList?.[(tripDetail.currentStopIndex || 0) + 1];
+                const nextPendingIdx = tripDetail.stops?.findIndex((st, idx) => {
+                  if (idx === 0) return false;
+                  const sObj = tripDetail.stopsList?.find(
+                    (s) =>
+                      (s.location || s.locationName)?.toLowerCase().trim() === st?.toLowerCase().trim() ||
+                      s.sequence === idx + 1 ||
+                      s.sequenceNumber === idx + 1
+                  );
+                  return !sObj || sObj.verificationStatus !== 'COMPLETED';
+                });
+
+                const nextStopObj = nextPendingIdx != null && nextPendingIdx > 0
+                  ? (tripDetail.stopsList?.find(
+                      (s) =>
+                        (s.location || s.locationName)?.toLowerCase().trim() === tripDetail.stops[nextPendingIdx]?.toLowerCase().trim() ||
+                        s.sequence === nextPendingIdx + 1
+                    ) || {
+                      location: tripDetail.stops[nextPendingIdx],
+                      locationName: tripDetail.stops[nextPendingIdx],
+                      sequence: nextPendingIdx + 1
+                    })
+                  : null;
+
                 const nextStopName =
-                  nextPending?.location ||
-                  nextPending?.locationName ||
-                  tripDetail.stops?.[(tripDetail.currentStopIndex || 0) + 1] ||
-                  'Next City';
+                  nextStopObj?.location ||
+                  nextStopObj?.locationName ||
+                  (nextPendingIdx != null && nextPendingIdx > 0 ? tripDetail.stops[nextPendingIdx] : null);
 
                 return (
                   <>
-                    {nextPending && (
+                    {nextStopName && (
                       <button
-                        onClick={() => handleVerifyStopArrival(null, undefined)}
+                        onClick={() => handleVerifyStopArrival(nextStopObj, nextPendingIdx)}
                         disabled={detailLoading}
                         className="inline-flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black shadow-sm transition cursor-pointer border-none"
                       >
@@ -562,11 +621,17 @@ const ManagerLiveTripOpsView = () => {
           {/* ── AUTHORITATIVE LIVE CARGO MANIFEST PANEL ── */}
           {(() => {
             const allAssignments = tripDetail.assignments || [];
-            const currentCity = tripDetail.stops?.[tripDetail.currentStopIndex || 0] || '';
             const currentStopIdx = tripDetail.currentStopIndex || 0;
+            const isEnRoute = ['IN_TRANSIT', 'DISPATCHED'].includes(tripDetail.status);
+            const currentCity = tripDetail.currentStop || tripDetail.stops?.[currentStopIdx] || 'Chennai';
+            const nextCity = tripDetail.stops?.[currentStopIdx + 1] || currentCity;
+            const targetCity = isEnRoute ? nextCity : currentCity;
 
             const onTruckCargo = allAssignments.filter(a => a.status !== 'DELIVERED' && a.liveStatus !== 'DELIVERED');
-            const unloadsAtCurrent = allAssignments.filter(a => (a.deliveryStop || a.delivery) === currentCity && a.status !== 'DELIVERED');
+            const unloadsAtTarget = allAssignments.filter(a => {
+              const dest = (a.deliveryStop || a.delivery || '').toLowerCase().trim();
+              return dest === targetCity.toLowerCase().trim() && a.status !== 'DELIVERED' && a.liveStatus !== 'DELIVERED';
+            });
             const deliveredCargo = allAssignments.filter(a => a.status === 'DELIVERED' || a.liveStatus === 'DELIVERED');
 
             const totalLoadedVol = onTruckCargo.reduce((s, a) => s + (Number(a.volume) || 0), 0);
@@ -595,9 +660,13 @@ const ManagerLiveTripOpsView = () => {
                   </div>
 
                   <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-xs">
-                    <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block">CURRENT STOP &amp; UNLOADS</span>
-                    <span className="text-xl font-black text-amber-600 mt-0.5 block">{currentCity || 'Chennai'}</span>
-                    <span className="text-[10px] text-amber-700 font-bold">{unloadsAtCurrent.length} package(s) eligible to unload</span>
+                    <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block">
+                      {isEnRoute ? 'NEXT DESTINATION HUB' : 'CURRENT STOP & UNLOADS'}
+                    </span>
+                    <span className="text-xl font-black text-amber-600 mt-0.5 block">{targetCity}</span>
+                    <span className="text-[10px] text-amber-700 font-bold">
+                      {unloadsAtTarget.length} consignment(s) to unload {isEnRoute ? 'upon arrival' : 'here'}
+                    </span>
                   </div>
                 </div>
 
