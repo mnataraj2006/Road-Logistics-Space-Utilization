@@ -812,6 +812,7 @@ export const executeStopLifecycleOperational = async ({
             status: 'DELIVERED',
             allocationStatus: 'DELIVERED',
             physicalStatus: 'DELIVERED',
+            isLocked: false,
             deliveredAt: now
           }
         },
@@ -828,6 +829,7 @@ export const executeStopLifecycleOperational = async ({
             status: 'DELIVERED',
             allocationStatus: 'DELIVERED',
             physicalStatus: 'DELIVERED',
+            isLocked: false,
             deliveredAt: now
           }
         },
@@ -847,7 +849,7 @@ export const executeStopLifecycleOperational = async ({
             { bookingId: c.shipmentId }
           ]
         },
-        { $set: { status: 'DELIVERED', physicalStatus: 'DELIVERED', deliveredAt: now } },
+        { $set: { status: 'DELIVERED', physicalStatus: 'DELIVERED', isLocked: false, deliveredAt: now } },
         { session }
       );
     }
@@ -992,7 +994,7 @@ export const executeStopLifecycleOperational = async ({
           ],
           status: { $nin: ['CANCELLED', 'DELIVERED'] }
         },
-        { $set: { status: 'DELIVERED', allocationStatus: 'DELIVERED', physicalStatus: 'DELIVERED', deliveredAt: now } },
+        { $set: { status: 'DELIVERED', allocationStatus: 'DELIVERED', physicalStatus: 'DELIVERED', isLocked: false, deliveredAt: now } },
         { session }
       ),
       Shipment.updateMany(
@@ -1005,12 +1007,12 @@ export const executeStopLifecycleOperational = async ({
           ],
           status: { $nin: ['CANCELLED', 'DELIVERED'] }
         },
-        { $set: { status: 'DELIVERED', allocationStatus: 'DELIVERED', physicalStatus: 'DELIVERED', deliveredAt: now } },
+        { $set: { status: 'DELIVERED', allocationStatus: 'DELIVERED', physicalStatus: 'DELIVERED', isLocked: false, deliveredAt: now } },
         { session }
       ),
       trip.activeLoadPlanId ? LoadAssignment.updateMany(
         { loadPlanId: trip.activeLoadPlanId, status: { $ne: 'DELIVERED' } },
-        { $set: { status: 'DELIVERED', physicalStatus: 'DELIVERED', deliveredAt: now } },
+        { $set: { status: 'DELIVERED', physicalStatus: 'DELIVERED', isLocked: false, deliveredAt: now } },
         { session }
       ) : Promise.resolve()
     ]);

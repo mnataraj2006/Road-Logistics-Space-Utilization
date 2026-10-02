@@ -789,17 +789,18 @@ export const updateVehicleTransitState = async (req, res) => {
         bkg.status = 'DELIVERED';
         bkg.allocationStatus = 'DELIVERED';
         bkg.physicalStatus = 'DELIVERED';
+        bkg.isLocked = false;
         bkg.deliveredAt = now;
         await bkg.save();
 
         await Shipment.updateMany(
           { $or: [{ bookingId: bkg.bookingId }, { shipmentId: bkg.shipmentId || bkg.bookingId }] },
-          { $set: { status: 'DELIVERED', allocationStatus: 'DELIVERED', physicalStatus: 'DELIVERED', deliveredAt: now } }
+          { $set: { status: 'DELIVERED', allocationStatus: 'DELIVERED', physicalStatus: 'DELIVERED', isLocked: false, deliveredAt: now } }
         );
 
         await LoadAssignment.updateMany(
           { $or: [{ bookingId: bkg.bookingId }, { shipmentId: bkg.shipmentId || bkg.bookingId }] },
-          { $set: { status: 'DELIVERED', physicalStatus: 'DELIVERED', deliveredAt: now } }
+          { $set: { status: 'DELIVERED', physicalStatus: 'DELIVERED', isLocked: false, deliveredAt: now } }
         );
 
         // Also release payment corresponding to this booking
@@ -913,19 +914,20 @@ export const verifyStop = async (req, res) => {
       bkg.status = 'DELIVERED';
       bkg.allocationStatus = 'DELIVERED';
       bkg.physicalStatus = 'DELIVERED';
+      bkg.isLocked = false;
       bkg.deliveredAt = now;
       await bkg.save();
 
       // Sync Shipment
       await Shipment.updateMany(
         { $or: [{ bookingId: bkg.bookingId }, { shipmentId: bkg.shipmentId || bkg.bookingId }] },
-        { $set: { status: 'DELIVERED', allocationStatus: 'DELIVERED', physicalStatus: 'DELIVERED', deliveredAt: now } }
+        { $set: { status: 'DELIVERED', allocationStatus: 'DELIVERED', physicalStatus: 'DELIVERED', isLocked: false, deliveredAt: now } }
       );
 
       // Sync LoadAssignment
       await LoadAssignment.updateMany(
         { $or: [{ bookingId: bkg.bookingId }, { shipmentId: bkg.shipmentId || bkg.bookingId }] },
-        { $set: { status: 'DELIVERED', physicalStatus: 'DELIVERED', deliveredAt: now } }
+        { $set: { status: 'DELIVERED', physicalStatus: 'DELIVERED', isLocked: false, deliveredAt: now } }
       );
 
       // Release payment corresponding to this booking
