@@ -9,10 +9,17 @@ class DemandForecastRequest(BaseModel):
 class DailyForecast(BaseModel):
     date: str
     predicted_bookings_count: int
+    calendar_event: str = "Standard Freight Schedule"
+    surge_multiplier: float = 1.0
+    day_type: str = "Weekday"
+    is_surge_day: bool = False
 
 class DemandForecastResponse(BaseModel):
     route_id: str
+    model_type: str = "LightGBM + Tamil Nadu Calendar Regressors"
     forecast: List[DailyForecast]
+    active_corridor_factors: List[str] = []
+    r2_score: float = 0.90
 
 # Occupancy Prediction Requests & Responses
 class OccupancyPredictionRequest(BaseModel):

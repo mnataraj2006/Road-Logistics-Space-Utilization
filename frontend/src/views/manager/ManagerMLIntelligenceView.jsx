@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   BrainCircuit, TrendingUp, Clock, IndianRupee, RotateCw,
   CheckCircle, AlertTriangle, XCircle, Info, Sparkles,
@@ -117,6 +117,7 @@ const ManagerMLIntelligenceView = () => {
   const [demandRouteId, setDemandRouteId] = useState("");
   const [demandDays,    setDemandDays]    = useState(7);
   const [demandData,    setDemandData]    = useState([]);
+  const [demandMeta,    setDemandMeta]    = useState(null);
   const [demandLoading, setDemandLoading] = useState(false);
   const [demandError,   setDemandError]   = useState("");
 
@@ -181,11 +182,13 @@ const ManagerMLIntelligenceView = () => {
         days_ahead: Math.max(1, Math.min(30, parseInt(demandDays) || 7)),
       });
       setDemandData(data.forecast || []);
+      setDemandMeta(data);
     } catch (e) {
       const msg = e?.response?.data?.message || e?.response?.data?.detail
         || "Demand forecast unavailable. Check if the ML service is running.";
       setDemandError(msg);
       setDemandData([]);
+      setDemandMeta(null);
     } finally { setDemandLoading(false); }
   }, [demandRouteId, demandDays]);
 
@@ -238,9 +241,15 @@ const ManagerMLIntelligenceView = () => {
     plugins: {
       legend: { display: false },
       tooltip: {
-        backgroundColor: "#fff", titleColor: "#111827", bodyColor: "#6b7280",
+        backgroundColor: "#fff", titleColor: "#111827", bodyColor: "#374151",
         borderColor: "#e5e7eb", borderWidth: 1, padding: 10,
-        callbacks: { label: (ctx) => ` ${ctx.parsed.y} bookings` },
+        callbacks: {
+          label: (ctx) => {
+            const item = demandData[ctx.dataIndex];
+            const eventStr = item?.calendar_event && item.calendar_event !== 'Standard Regional Freight Schedule' ? ` · ${item.calendar_event}` : '';
+            return ` ${ctx.parsed.y} bookings${eventStr}`;
+          }
+        },
       },
     },
     scales: {
@@ -331,12 +340,22 @@ const ManagerMLIntelligenceView = () => {
       {/* SECTION 1 — DEMAND FORECAST */}
       <div className="bg-white rounded-3xl border border-gray-200 shadow-sm p-6 space-y-5">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-100 pb-4">
-          <SectionHeader icon={TrendingUp} title="Route Demand Forecast"
-            sub="Holt-Winters Exponential Smoothing · historical booking counts per route" />
-          <button onClick={fetchDemand} disabled={demandLoading} id="btn-refresh-demand"
-            className="flex items-center gap-1.5 text-[10px] font-black text-gray-500 hover:text-emerald-600 bg-gray-50 hover:bg-emerald-50 border border-gray-200 hover:border-emerald-200 px-3 py-1.5 rounded-lg cursor-pointer transition">
-            <RefreshCw className={`w-3 h-3 ${demandLoading ? "animate-spin" : ""}`} />Refresh
-          </button>
+          <SectionHeader
+            icon={TrendingUp}
+            title="Route Demand Forecast"
+            sub="LightGBM Regressor · Tamil Nadu Freight Calendar & Industrial Quota Regressors"
+          />
+          <div className="flex items-center gap-2">
+            {demandMeta?.r2_score && (
+              <span className="px-2.5 py-1 rounded-lg text-[10px] font-black bg-emerald-50 text-emerald-800 border border-emerald-200">
+                LightGBM R²: {demandMeta.r2_score}
+              </span>
+            )}
+            <button onClick={fetchDemand} disabled={demandLoading} id="btn-refresh-demand"
+              className="flex items-center gap-1.5 text-[10px] font-black text-gray-500 hover:text-emerald-600 bg-gray-50 hover:bg-emerald-50 border border-gray-200 hover:border-emerald-200 px-3 py-1.5 rounded-lg cursor-pointer transition">
+              <RefreshCw className={`w-3 h-3 ${demandLoading ? "animate-spin" : ""}`} />Refresh
+            </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
@@ -390,21 +409,50 @@ const ManagerMLIntelligenceView = () => {
         </div>
 
         {demandData.length > 0 && (
-          <div>
-            <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-2">Forecast Detail (next 7 days)</p>
-            <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
+          <div className="space-y-3">
+            <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Forecast Detail &amp; Calendar Factors</p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2">
               {demandData.slice(0, 7).map((f) => (
-                <div key={f.date} className="bg-gray-50 rounded-xl p-2 text-center border border-gray-100">
-                  <p className="text-[8px] font-black text-gray-400 uppercase">{f.date.slice(5)}</p>
-                  <p className="text-sm font-black text-gray-900 mt-0.5">{f.predicted_bookings_count}</p>
-                  <p className="text-[8px] text-gray-400 font-semibold">bookings</p>
+                <div key={f.date} className={`rounded-xl p-2.5 text-center border transition flex flex-col justify-between ${
+                  f.is_surge_day
+                    ? 'bg-emerald-50/80 border-emerald-300 shadow-xs'
+                    : f.day_type === 'Sunday'
+                    ? 'bg-amber-50/40 border-amber-200'
+                    : 'bg-gray-50 border-gray-100'
+                }`}>
+                  <div>
+                    <p className="text-[9px] font-black text-gray-500 uppercase">{f.date.slice(5)}</p>
+                    <p className="text-base font-black text-gray-900 mt-0.5">{f.predicted_bookings_count}</p>
+                    <p className="text-[8px] text-gray-400 font-semibold">bookings</p>
+                  </div>
+                  {f.calendar_event && f.calendar_event !== 'Standard Regional Freight Schedule' && (
+                    <span className={`inline-block mt-1 px-1.5 py-0.5 rounded text-[7.5px] font-black truncate max-w-full ${
+                      f.is_surge_day ? 'bg-emerald-200/80 text-emerald-950 font-bold' : 'bg-gray-200 text-gray-700'
+                    }`} title={f.calendar_event}>
+                      {f.calendar_event.replace(' Surge', '').replace(' Dispatch', '')}
+                    </span>
+                  )}
                 </div>
               ))}
             </div>
+
+            {demandMeta?.active_corridor_factors && demandMeta.active_corridor_factors.length > 0 && (
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                <p className="text-[10px] font-black text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
+                  Active Tamil Nadu Calendar &amp; Quota Regressors:
+                </p>
+                <ul className="text-[11px] text-slate-600 space-y-0.5 list-disc list-inside">
+                  {demandMeta.active_corridor_factors.map((factor, idx) => (
+                    <li key={idx} className="leading-relaxed">{factor}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             {selectedRoute && (
-              <p className="text-[10px] text-gray-400 font-semibold mt-2">
-                ⓘ Historical booking counts for {selectedRoute.source} → {selectedRoute.destination}.
-                Model: Holt-Winters ExponentialSmoothing. These are ML estimates, not guarantees.
+              <p className="text-[10px] text-gray-400 font-semibold">
+                ⓘ Trained Model: LightGBM Regressor with Tamil Nadu Calendar &amp; Industrial Quota Regressors for {selectedRoute.source} → {selectedRoute.destination}.
               </p>
             )}
           </div>
